@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Include resources that can be safely backed up -->
+    <include domain="sharedpref" path="." />
+    <exclude domain="sharedpref" path="device_features.xml" />
+</full-backup-content>
