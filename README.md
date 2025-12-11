@@ -3,6 +3,7 @@
 ![Status](https://img.shields.io/badge/Status-Phase%203.1%20(Android)-blue)
 ![Version](https://img.shields.io/badge/Version-0.1.0--alpha-orange)
 ![License](https://img.shields.io/badge/License-Proprietary-red)
+![Android Build](https://github.com/CKCHDX/SBMS/actions/workflows/android-build.yml/badge.svg)
 
 ## What is SBMS?
 
@@ -44,51 +45,51 @@ SBMS leverages Bluetooth's **Object Push Profile (OPP)** to transfer message fil
 
 ---
 
-## Quick Start
+## 🚀 Quick Start (No Android Studio Required!)
 
-### Requirements
+### Download Pre-Built APK
 
-**Hardware**:
-- Samsung E1310E (or similar 2000s Samsung with Bluetooth 2.0 OPP)
-- Samsung Galaxy Z Fold 6 (or Android 5.0+ device with SMS capability)
-- Stable Bluetooth connection between devices
-- Active SIM card in Z Fold 6
+**Option 1: GitHub Actions (Recommended)**
 
-**Software**:
-- Android Studio 2024.1+
-- JDK 17+
-- Kotlin 1.9+
+1. Go to [Actions tab](https://github.com/CKCHDX/SBMS/actions)
+2. Click latest **"Android Build APK"** workflow
+3. Download **"sbms-debug-apk"** artifact
+4. Unzip and install:
+   ```bash
+   unzip sbms-debug-apk.zip
+   adb install app-debug.apk
+   ```
 
-### Installation
+**See [docs/GITHUB_ACTIONS_BUILD.md](docs/GITHUB_ACTIONS_BUILD.md) for full details**
 
-#### 1. Clone Repository
+**Option 2: Build Locally (Fallback)**
+
+Only if GitHub Actions doesn't work:
 ```bash
 git clone https://github.com/CKCHDX/SBMS.git
-cd SBMS
-git checkout android-phase3
+cd SBMS && git checkout android-phase3
+cd android && ./gradlew assembleDebug
+# APK: android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-#### 2. Build Android App
-```bash
-cd android
-./gradlew build
-./gradlew installDebug
-```
+### Installation on Z Fold 6
 
-#### 3. Run on Z Fold 6
-1. Open Settings → Bluetooth
-2. Enable Bluetooth
-3. Search for and pair with E1310E
-4. Open SBMS app
-5. Grant all requested permissions
-6. Tap "Start Service"
-7. Confirm "Running" status
+1. **Enable USB Debugging**
+   ```
+   Settings → About Phone → Build Number (tap 7 times)
+   Settings → Developer Options → USB Debugging (ON)
+   ```
 
-#### 4. Test with E1310E
-1. On E1310E: Contacts → Select contact → Send via Bluetooth
-2. Select your Z Fold 6 from paired devices
-3. Send the contact as vCard
-4. Check SBMS app logs for reception
+2. **Install APK**
+   ```bash
+   adb install app-debug.apk
+   ```
+
+3. **Launch & Setup**
+   - Open SBMS app
+   - Grant all permissions
+   - Tap "Start Service"
+   - Verify "✓ Running" status
 
 ---
 
@@ -162,35 +163,35 @@ SBMS Response Generator:
 
 ---
 
-## Project Structure
+## 🛠️ Project Structure
 
 ```
 SBMS/
-├── service.md                    # Original technical specification (70 KB)
 ├── README.md                     # This file
+├── QUICK_START.md                # 5-minute setup guide
+├── service.md                    # Original technical specification
 ├── IMPLEMENTATION_GUIDE.md       # Technical development guide
 ├── DEVELOPMENT_ROADMAP.md        # Timeline and status
+├── BUILD_AND_TEST.md             # Testing procedures
+├── PROJECT_SUMMARY.md            # What was built
+├── .github/workflows/
+│   └── android-build.yml         # GitHub Actions CI/CD
+├── docs/
+│   └── GITHUB_ACTIONS_BUILD.md   # How to build APK without Android Studio
 ├── android/                      # Android app (Phase 3)
 │   ├── build.gradle.kts
-│   ├── app/
-│   │   ├── build.gradle.kts
-│   │   ├── src/main/
-│   │   │   ├── kotlin/com/ckchdx/sbms/
-│   │   │   │   ├── MainActivity.kt (UI)
-│   │   │   │   ├── model/SBMSMessage.kt (vCard parsing)
-│   │   │   │   ├── service/SBMSBluetoothService.kt (listener)
-│   │   │   │   ├── util/SMSManager.kt (SMS wrapper)
-│   │   │   │   └── receiver/BluetoothFileReceiver.kt (events)
-│   │   │   └── AndroidManifest.xml
-│   └── proguard-rules.pro
-├── j2me/                       # J2ME app (Phase 2, planned)
-│   ├── src/
-│   ├── build.xml
-│   └── README.md
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── TESTING.md
-    └── TROUBLESHOOTING.md
+│   ├── settings.gradle.kts
+│   └── app/
+│       ├── build.gradle.kts
+│       └── src/main/
+│           ├── kotlin/com/ckchdx/sbms/
+│           │   ├── MainActivity.kt
+│           │   ├── model/SBMSMessage.kt
+│           │   ├── service/SBMSBluetoothService.kt
+│           │   ├── util/SMSManager.kt
+│           │   └── receiver/BluetoothFileReceiver.kt
+│           └── AndroidManifest.xml
+└── j2me/                       # J2ME app (Phase 2, planned)
 ```
 
 ---
@@ -226,32 +227,6 @@ END:VCARD
 
 ---
 
-## Permissions
-
-SBMS requires the following permissions (requested at runtime):
-
-### Bluetooth
-- `BLUETOOTH` - Core Bluetooth API
-- `BLUETOOTH_ADMIN` - Enable/disable Bluetooth
-- `BLUETOOTH_SCAN` (Android 12+) - Scan for devices
-- `BLUETOOTH_CONNECT` (Android 12+) - Connect to devices
-
-### SMS
-- `SEND_SMS` - Send text messages (CRITICAL)
-- `RECEIVE_SMS` - Receive SMS broadcasts
-- `READ_SMS` - Read SMS content provider
-
-### File System
-- `READ_EXTERNAL_STORAGE` - Read /sdcard/Download/Bluetooth/
-- `WRITE_EXTERNAL_STORAGE` - Write response files
-- `MANAGE_EXTERNAL_STORAGE` (Android 11+) - Full access
-
-### Other
-- `INTERNET` - For future logging/analytics
-- `READ_CONTACTS` - Future: contact validation
-
----
-
 ## Development Status
 
 ### Completed ✅
@@ -263,6 +238,7 @@ SBMS requires the following permissions (requested at runtime):
 - [x] SMS sending wrapper
 - [x] Main activity UI
 - [x] Permission handling
+- [x] GitHub Actions CI/CD
 - [x] Comprehensive documentation
 
 ### In Progress 🟡
@@ -285,7 +261,7 @@ SBMS requires the following permissions (requested at runtime):
 **Solution**: 
 1. Check Android version (minSdk 21 = Android 5.0)
 2. Clear app cache: `adb shell pm clear com.ckchdx.sbms`
-3. Reinstall: `./gradlew installDebug`
+3. Reinstall: `adb install -r app-debug.apk`
 
 ### Files Not Detected
 **Problem**: Bluetooth files aren't showing up in app
@@ -304,13 +280,13 @@ SBMS requires the following permissions (requested at runtime):
 4. Check SMS permission is granted
 5. Test manual SMS via Messages app works
 
-### Bluetooth Disconnects
-**Problem**: Connection drops frequently
+### GitHub Actions Build Fails
+**Problem**: APK not available in Actions artifacts
 **Solution**:
-1. Update Bluetooth drivers (depends on OS)
-2. Restart both devices
-3. Clear Bluetooth cache: `adb shell pm clear com.android.bluetooth`
-4. Re-pair devices
+1. Check Actions tab for error logs
+2. Verify workflow file syntax
+3. Manually trigger workflow: Actions → "Run workflow"
+4. See [docs/GITHUB_ACTIONS_BUILD.md](docs/GITHUB_ACTIONS_BUILD.md) for troubleshooting
 
 For more help, see `docs/TROUBLESHOOTING.md`
 
@@ -359,7 +335,13 @@ All projects: [github.com/CKCHDX](https://github.com/CKCHDX)
 ## Contact & Support
 
 **Issues & Bugs**: [GitHub Issues](https://github.com/CKCHDX/SBMS/issues)
-**Documentation**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) | [DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md)
+**Documentation**: 
+- [QUICK_START.md](QUICK_START.md) - 5-minute setup
+- [GITHUB_ACTIONS_BUILD.md](docs/GITHUB_ACTIONS_BUILD.md) - Build without Android Studio
+- [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) - Technical details
+- [BUILD_AND_TEST.md](BUILD_AND_TEST.md) - Testing procedures
+- [DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md) - Timeline
+
 **Website**: [oscyra.solutions](https://oscyra.solutions/)
 
 ---
@@ -372,6 +354,7 @@ All projects: [github.com/CKCHDX](https://github.com/CKCHDX)
 - Bluetooth OPP folder monitoring
 - SMS sending via Android API
 - Main activity with permission handling
+- GitHub Actions CI/CD workflow
 - Comprehensive documentation
 
 ---
