@@ -1,0 +1,99 @@
+name: Android Build APK
+
+on:
+  push:
+    branches:
+      - android-phase3
+      - main
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+  pull_request:
+    branches:
+      - android-phase3
+      - main
+    paths:
+      - 'android/**'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+jobs:
+  build:
+    name: Build SBMS APK
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # Step 2: Setup JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+      
+      # Step 3: Grant execute permission to gradlew
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+      
+      # Step 4: Build debug APK
+      - name: Build Debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace
+      
+      # Step 5: Build release APK (unsigned)
+      - name: Build Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace
+        continue-on-error: true  # Release build may fail without signing key
+      
+      # Step 6: Upload debug APK as artifact
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbms-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+      
+      # Step 7: Upload release APK as artifact (if exists)
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: sbms-release-apk
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 30
+        continue-on-error: true
+      
+      # Step 8: Get APK file info
+      - name: Get APK Info
+        run: |
+          echo "=== Debug APK Info ==="
+          ls -lh android/app/build/outputs/apk/debug/
+          if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            APK_SIZE=$(du -h android/app/build/outputs/apk/debug/app-debug.apk | cut -f1)
+            echo "Debug APK Size: $APK_SIZE"
+          fi
+          
+          echo ""
+          echo "=== Build Summary ==="
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Build Status: SUCCESS"
+      
+      # Step 9: Comment on PR with APK download link (if PR)
+      - name: Comment PR with APK link
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🤖 **SBMS APK Build Complete!**\n\n✅ Debug APK is ready for download.\n\nClick "Actions" tab → Select this workflow run → Download "sbms-debug-apk" artifact.\n\nOr install directly:\n```bash\nadb install app-debug.apk\n```'
+            })
