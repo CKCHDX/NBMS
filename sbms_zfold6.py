@@ -56,6 +56,10 @@ RECONNECT_INTERVAL = 5  # seconds
 PING_INTERVAL = 10  # seconds
 SYNC_INTERVAL = 30  # seconds
 
+# Socket settings
+SOCKET_TIMEOUT = 2  # seconds
+MAX_RECV_SIZE = 4096  # bytes
+
 # Paths
 BASE_PATH = os.path.expanduser("~/.sbms")
 LOG_FILE = os.path.join(BASE_PATH, "zfold6.log")
@@ -233,86 +237,67 @@ class SBMSZFold6Client:
         self.socket = None
         self.connected = False
         self.running = False
-        self.lock = threading.Lock()
         self.reconnect_timer = 0
         self.ping_timer = 0
         self.sync_timer = 0
     
     def connect(self) -> bool:
         """Connect to Windows SBMS host"""
-        with self.lock:
-            try:
-                if self.socket:
-                    try:
-                        self.socket.close()
-                    except:
-                        pass
-                
-                logger.info(f"Connecting to {self.host}:{self.port}...")
-                
-                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.socket.settimeout(5)
-                self.socket.connect((self.host, self.port))
-                
-                self.connected = True
-                logger.info(f"[OK] Connected to Windows host")
-                
-                # Identify ourselves
-                self.identify()
-                return True
+        try:
+            if self.socket:
+                try:
+                    self.socket.close()
+                except:
+                    pass
             
-            except socket.timeout:
-                logger.warning(f"Connection timeout to {self.host}:{self.port}")
-                self.connected = False
-                return False
+            logger.info(f"Connecting to {self.host}:{self.port}...")
             
-            except ConnectionRefusedError:
-                logger.warning(f"Connection refused by {self.host}:{self.port}")
-                logger.warning("Is Windows host running? (sbms_windows_host.py)")
-                self.connected = False
-                return False
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(SOCKET_TIMEOUT)
+            self.socket.connect((self.host, self.port))
             
-            except Exception as e:
-                logger.error(f"Failed to connect: {e}")
-                self.connected = False
-                return False
+            self.connected = True
+            logger.info(f"[OK] Connected to Windows host")
+            
+            # Identify ourselves
+            self.identify()
+            return True
+        
+        except socket.timeout:
+            logger.warning(f"Connection timeout to {self.host}:{self.port}")
+            self.connected = False
+            return False
+        
+        except ConnectionRefusedError:
+            logger.warning(f"Connection refused by {self.host}:{self.port}")
+            logger.warning("Is Windows host running? (sbms_windows_host.py)")
+            self.connected = False
+            return False
+        
+        except Exception as e:
+            logger.error(f"Failed to connect: {e}")
+            self.connected = False
+            return False
     
-    def send_message(self, msg: Dict) -> Optional[Dict]:
-        """Send message to host and receive response"""
-        with self.lock:
-            try:
-                if not self.connected or not self.socket:
-                    return None
-                
-                # Send
-                data = json.dumps(msg).encode('utf-8')
-                self.socket.sendall(data)
-                logger.debug(f"[SEND] {msg}")
-                
-                # Receive
-                self.socket.settimeout(5)
-                response_data = self.socket.recv(4096).decode('utf-8')
-                
-                if not response_data:
-                    logger.warning("Connection closed by host")
-                    self.connected = False
-                    return None
-                
-                response = json.loads(response_data)
-                logger.debug(f"[RECV] {response}")
-                
-                return response
+    def send_message(self, msg: Dict) -> bool:
+        """Send message to host (fire and forget, no response expected)"""
+        try:
+            if not self.connected or not self.socket:
+                return False
             
-            except socket.timeout:
-                logger.debug("Socket timeout (normal keep-alive behavior)")
-                return None
+            # Send message
+            data = json.dumps(msg).encode('utf-8')
+            self.socket.sendall(data)
+            logger.debug(f"[SEND] {msg['type']}")
             
-            except Exception as e:
-                logger.error(f"Communication error: {e}")
-                self.connected = False
-                return None
+            return True
+        
+        except Exception as e:
+            logger.error(f"Failed to send message: {e}")
+            self.connected = False
+            return False
     
-    def identify(self) -> Optional[Dict]:
+    def identify(self) -> bool:
         """Identify device to host"""
         msg = {
             "type": "identify",
@@ -321,10 +306,10 @@ class SBMSZFold6Client:
         }
         return self.send_message(msg)
     
-    def sync_contacts(self, contacts: List[Dict]) -> Optional[Dict]:
+    def sync_contacts(self, contacts: List[Dict]) -> bool:
         """Sync Android contacts to Windows host"""
         if not self.connected:
-            return None
+            return False
         
         try:
             msg = {
@@ -332,20 +317,20 @@ class SBMSZFold6Client:
                 "contacts": contacts
             }
             
-            response = self.send_message(msg)
+            result = self.send_message(msg)
             
-            if response and response.get('status') == 'synced':
+            if result:
                 logger.info(f"Synced {len(contacts)} contacts to host")
                 # Cache contacts
                 AndroidContactManager.cache_contacts(contacts)
             
-            return response
+            return result
         
         except Exception as e:
             logger.error(f"Failed to sync contacts: {e}")
-            return None
+            return False
     
-    def report_sms_status(self, msg_id: str, status: str) -> Optional[Dict]:
+    def report_sms_status(self, msg_id: str, status: str) -> bool:
         """Report SMS delivery status"""
         msg = {
             "type": "sms_status",
@@ -355,21 +340,20 @@ class SBMSZFold6Client:
         }
         return self.send_message(msg)
     
-    def ping(self) -> Optional[Dict]:
+    def ping(self) -> bool:
         """Ping host to keep connection alive"""
         msg = {"type": "ping"}
         return self.send_message(msg)
     
     def disconnect(self) -> None:
         """Disconnect from host"""
-        with self.lock:
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
-            self.connected = False
-            logger.info("Disconnected from host")
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+        self.connected = False
+        logger.info("Disconnected from host")
     
     def run(self) -> None:
         """Main background service loop"""
@@ -404,7 +388,9 @@ class SBMSZFold6Client:
                 # Ping every PING_INTERVAL seconds
                 self.ping_timer += 1
                 if self.ping_timer >= PING_INTERVAL:
-                    self.ping()
+                    if not self.ping():
+                        logger.warning("Ping failed, disconnecting")
+                        self.connected = False
                     self.ping_timer = 0
                 
                 # Sync contacts every SYNC_INTERVAL seconds
@@ -412,7 +398,8 @@ class SBMSZFold6Client:
                 if self.sync_timer >= SYNC_INTERVAL:
                     contacts = AndroidContactManager.get_contacts()
                     if contacts:
-                        self.sync_contacts(contacts)
+                        if not self.sync_contacts(contacts):
+                            logger.warning("Sync failed, will retry")
                     self.sync_timer = 0
             
             # Sleep for 1 second
