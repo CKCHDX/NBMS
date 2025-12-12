@@ -64,8 +64,8 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -589,12 +589,12 @@ class SBMSHost:
         time.sleep(0.5)
         
         logger.info("="*70)
-        logger.info("✓ All services started successfully")
+        logger.info("[OK] All services started successfully")
         logger.info("="*70)
-        logger.info("✓ Bluetooth server listening")
-        logger.info("✓ TCP server listening on 127.0.0.1:9999")
-        logger.info("✓ Contact database ready")
-        logger.info("✓ Message queue active")
+        logger.info("[OK] Bluetooth server listening")
+        logger.info("[OK] TCP server listening on 127.0.0.1:9999")
+        logger.info("[OK] Contact database ready")
+        logger.info("[OK] Message queue active")
         logger.info("="*70)
         logger.info("")
         logger.info("Press Ctrl+C to shut down...")
