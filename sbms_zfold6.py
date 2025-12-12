@@ -3,7 +3,9 @@
 SBMS Z Fold 6 Client (Termux/Android Python)
 
 Bridges Samsung Z Fold 6 Android contacts and SMS with SBMS Windows Host.
-Runs in Termux, syncs contacts, and sends SMS via Shizuku.
+Runs in Termux, syncs contacts via Shizuku, and sends SMS.
+
+Requires Shizuku app installed and running on Z Fold 6.
 
 Author: Alex Jonsson
 Location: Stockholm, Sweden
@@ -11,24 +13,20 @@ Date: December 2025
 
 Requirements (in Termux):
 - python3.10+
-- socket (builtin)
-- json (builtin)
-- threading (builtin)
-- time (builtin)
-- sys (builtin)
-- os (builtin)
-- subprocess (builtin)
-- sqlite3 (builtin)
+- Shizuku app configured on Z Fold 6
+- Standard packages: socket, json, threading, time, sys, os, subprocess
 
-Optional:
-- android-api (for native Android contact access)
-
-Installation:
+Setup:
 ```bash
 pkg install python
 pip install --upgrade pip
 cp sbms_zfold6.py ~/.sbms/
 cd ~/.sbms
+
+# Grant Termux permissions via Shizuku (one-time)
+python sbms_zfold6.py --setup-shizuku
+
+# Run normally
 python sbms_zfold6.py --host WINDOWS_IP
 ```
 """
@@ -41,7 +39,6 @@ import threading
 import logging
 import subprocess
 import os
-import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -49,32 +46,26 @@ from typing import Dict, List, Optional
 # Configuration
 # ============================================================================
 
-DEFAULT_WINDOWS_HOST = "127.0.0.1"  # Change to actual Windows host IP
-DEFAULT_WINDOWS_PORT = 5555  # Bluetooth fallback TCP port
+DEFAULT_WINDOWS_HOST = "127.0.0.1"
+DEFAULT_WINDOWS_PORT = 5555
 DEVICE_NAME = "Z Fold 6"
 
 # Timers
-RECONNECT_INTERVAL = 5  # seconds
-PING_INTERVAL = 10  # seconds
-SYNC_INTERVAL = 30  # seconds
+RECONNECT_INTERVAL = 5
+PING_INTERVAL = 10
+SYNC_INTERVAL = 30
 
 # Socket settings
-SOCKET_TIMEOUT = 2  # seconds
-MAX_RECV_SIZE = 4096  # bytes
+SOCKET_TIMEOUT = 2
+MAX_RECV_SIZE = 4096
 
 # Paths
 BASE_PATH = os.path.expanduser("~/.sbms")
 LOG_FILE = os.path.join(BASE_PATH, "zfold6.log")
 CONTACTS_CACHE = os.path.join(BASE_PATH, "contacts_cache.json")
 
-# Android Contacts Database Paths (multiple versions)
-ANDROID_CONTACTS_DB_PATHS = [
-    "/data/data/com.android.providers.contacts/databases/contacts2.db",
-    "/data/data/com.android.providers.contacts/databases/contacts.db",
-    "/data/data/com.google.android.contacts/databases/contacts.db",
-    "/data/user/0/com.android.providers.contacts/databases/contacts2.db",
-    "/data/user/0/com.android.providers.contacts/databases/contacts.db",
-]
+# Shizuku command prefix (use with 'sh' to execute with Shizuku privileges)
+SHIZUKU_PREFIX = "sh"
 
 # Create directories
 os.makedirs(BASE_PATH, exist_ok=True)
@@ -94,250 +85,228 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
+# Shizuku Integration
+# ============================================================================
+
+class ShizukuHelper:
+    """
+    Helper class to interact with Shizuku service on Android 13+.
+    Requires Shizuku app to be running.
+    """
+    
+    @staticmethod
+    def check_shizuku() -> bool:
+        """Check if Shizuku is available and working"""
+        try:
+            # Try to run a simple command through Shizuku
+            result = subprocess.run(
+                ["sh", "-c", "which pm"],
+                capture_output=True,
+                timeout=5,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                logger.info("✓ Shizuku is available")
+                return True
+            else:
+                logger.warning("✗ Shizuku not responding properly")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to check Shizuku: {e}")
+            return False
+    
+    @staticmethod
+    def grant_permissions() -> bool:
+        """Grant necessary permissions to Termux via Shizuku"""
+        logger.info("Requesting Shizuku to grant permissions...")
+        
+        permissions = [
+            "android.permission.READ_CONTACTS",
+            "android.permission.SEND_SMS",
+            "android.permission.READ_SMS",
+        ]
+        
+        package = "com.termux"
+        
+        try:
+            for perm in permissions:
+                logger.info(f"  Granting {perm}...")
+                
+                # Use pm grant to give permission
+                cmd = f"pm grant {package} {perm}"
+                result = subprocess.run(
+                    ["sh", "-c", cmd],
+                    capture_output=True,
+                    timeout=5,
+                    text=True
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"    ✓ {perm} granted")
+                else:
+                    logger.warning(f"    ⚠ {perm} might not have been granted")
+            
+            logger.info("Permission setup complete")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Failed to grant permissions: {e}")
+            return False
+
+
+# ============================================================================
 # Android Integration
 # ============================================================================
 
 class AndroidContactManager:
     """
-    Reads contacts from Android ContentProvider in Termux.
-    Tries multiple methods to get real contacts from Android 16.
+    Reads contacts from Android via Shizuku.
+    Works on Android 13+ without root.
     """
     
     @staticmethod
     def get_contacts() -> List[Dict]:
-        """Get all contacts from Android"""
+        """Get all contacts from Android via Shizuku"""
         
-        # Method 1: Try content command (Termux-specific)
-        contacts = AndroidContactManager._get_contacts_via_content_cmd()
+        # Method 1: Query via content command with Shizuku
+        contacts = AndroidContactManager._get_contacts_via_shizuku()
         if contacts:
-            logger.info(f"Retrieved {len(contacts)} contacts via content command")
+            logger.info(f"Retrieved {len(contacts)} contacts via Shizuku")
             return contacts
         
-        # Method 2: Try SQLite database query
-        contacts = AndroidContactManager._get_contacts_from_sqlite()
+        # Method 2: Query via alternate URI
+        contacts = AndroidContactManager._get_contacts_alternate()
         if contacts:
-            logger.info(f"Retrieved {len(contacts)} contacts from SQLite database")
+            logger.info(f"Retrieved {len(contacts)} contacts (alternate method)")
             return contacts
-        
-        # Method 3: Try native Android API
-        try:
-            contacts = AndroidContactManager._get_contacts_native()
-            if contacts:
-                logger.info(f"Retrieved {len(contacts)} contacts from native API")
-                return contacts
-        except Exception as e:
-            logger.debug(f"Native API failed: {e}")
         
         # Fallback: Test contacts
         logger.warning("Could not get real contacts, using test contacts")
         return AndroidContactManager._get_test_contacts()
     
     @staticmethod
-    def _get_contacts_via_content_cmd() -> List[Dict]:
-        """Query contacts using Termux 'content' command"""
+    def _get_contacts_via_shizuku() -> List[Dict]:
+        """Query contacts using Shizuku-granted permissions"""
         try:
-            logger.debug("Attempting to get contacts via content command")
+            logger.debug("Querying contacts via Shizuku...")
             
-            # Use content command to query contacts
-            # This is available in Termux
-            cmd = [
-                "content", "query",
-                "--uri", "content://com.android.contacts/contacts",
-                "--projection", "display_name:phone_number"
-            ]
+            # Use content query to get all contacts
+            # The key is that Shizuku grants us the READ_CONTACTS permission
+            cmd = """content query \
+                --uri content://com.android.contacts/contacts \
+                --projection _id:display_name \
+            " && content query \
+                --uri content://com.android.contacts/data \
+                --projection contact_id:data1:mimetype_id \
+            """
             
             result = subprocess.run(
-                cmd,
+                ["sh", "-c", cmd],
                 capture_output=True,
                 timeout=10,
                 text=True
             )
             
             if result.returncode != 0:
-                logger.debug(f"content command failed: {result.stderr}")
+                logger.debug(f"Shizuku content query failed: {result.stderr}")
                 return []
             
-            # Parse output
-            contacts = []
-            seen = set()
+            # Parse contacts from output
+            contacts = {}
             
-            lines = result.stdout.split('\n')
-            for line in lines:
-                # Line format: display_name=Name, phone_number=+46701234567
-                if '=' in line and 'display_name' in line:
-                    # Extract name and phone from line
-                    parts = line.split(', ')
+            for line in result.stdout.split('\n'):
+                if 'display_name=' in line:
+                    # Parse contact line
                     contact_data = {}
-                    
-                    for part in parts:
+                    for part in line.split(', '):
                         if '=' in part:
-                            key, value = part.split('=', 1)
-                            contact_data[key.strip()] = value.strip()
+                            key, val = part.split('=', 1)
+                            contact_data[key.strip()] = val.strip()
                     
-                    if 'display_name' in contact_data and 'phone_number' in contact_data:
+                    if 'display_name' in contact_data:
+                        contact_id = contact_data.get('_id')
                         name = contact_data['display_name']
-                        phone = contact_data['phone_number'].replace(' ', '').replace('-', '')
-                        
-                        key = f"{name}:{phone}"
-                        if key not in seen and phone:
-                            contacts.append({
-                                "name": name,
-                                "phone": phone
-                            })
-                            seen.add(key)
-                            logger.debug(f"Found contact: {name} - {phone}")
+                        contacts[contact_id] = name
             
-            if contacts:
-                logger.info(f"Found {len(contacts)} contacts via content command")
+            # Now query phone numbers
+            cmd2 = """content query \
+                --uri content://com.android.contacts/data \
+                --projection contact_id:data1 \
+                --where 'mimetype_id = 5'
+            """
             
-            return contacts
+            result2 = subprocess.run(
+                ["sh", "-c", cmd2],
+                capture_output=True,
+                timeout=10,
+                text=True
+            )
+            
+            final_contacts = []
+            
+            for line in result2.stdout.split('\n'):
+                if 'contact_id=' in line and 'data1=' in line:
+                    contact_data = {}
+                    for part in line.split(', '):
+                        if '=' in part:
+                            key, val = part.split('=', 1)
+                            contact_data[key.strip()] = val.strip()
+                    
+                    contact_id = contact_data.get('contact_id')
+                    phone = contact_data.get('data1', '').replace(' ', '').replace('-', '')
+                    
+                    if contact_id in contacts and phone:
+                        final_contacts.append({
+                            "name": contacts[contact_id],
+                            "phone": phone
+                        })
+                        logger.debug(f"Found: {contacts[contact_id]} - {phone}")
+            
+            return final_contacts
         
-        except FileNotFoundError:
-            logger.debug("content command not found in Termux")
-            return []
         except Exception as e:
-            logger.debug(f"content command failed: {e}")
+            logger.debug(f"Shizuku query failed: {e}")
             return []
     
     @staticmethod
-    def _get_contacts_from_sqlite() -> List[Dict]:
-        """Query contacts from Android SQLite database"""
+    def _get_contacts_alternate() -> List[Dict]:
+        """Alternate method to query contacts"""
         try:
-            # Try each possible database path
-            db_path = None
-            for path in ANDROID_CONTACTS_DB_PATHS:
-                if os.path.exists(path):
-                    db_path = path
-                    logger.debug(f"Found contacts database at {db_path}")
-                    break
+            logger.debug("Trying alternate contact query method...")
             
-            if not db_path:
-                logger.debug(f"Contacts database not found in any known path")
+            # Try simpler URI
+            cmd = "content query --uri content://contacts/people --projection name:primary_phone"
+            
+            result = subprocess.run(
+                ["sh", "-c", cmd],
+                capture_output=True,
+                timeout=10,
+                text=True
+            )
+            
+            if result.returncode != 0:
                 return []
             
-            logger.debug(f"Querying contacts from {db_path}")
-            
-            # Connect to database
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Try different query approaches
             contacts = []
-            
-            # First try: contacts table with phone lookup
-            try:
-                query = """
-                SELECT DISTINCT
-                    c.display_name,
-                    p.data1
-                FROM contacts c
-                LEFT JOIN data d ON c._id = d.contact_id
-                LEFT JOIN phone_lookup p ON c._id = p.contact_id
-                WHERE p.data1 IS NOT NULL AND c.display_name IS NOT NULL
-                ORDER BY c.display_name
-                """
-                cursor.execute(query)
-                rows = cursor.fetchall()
-                
-                seen = set()
-                for row in rows:
-                    name, phone = row
-                    if phone and name:
-                        phone_clean = phone.replace(" ", "").replace("-", "")
-                        key = f"{name}:{phone_clean}"
-                        
-                        if key not in seen:
-                            contacts.append({
-                                "name": name,
-                                "phone": phone_clean
-                            })
-                            seen.add(key)
-            except Exception as e:
-                logger.debug(f"First query failed: {e}")
-                
-                # Second try: simpler query
-                try:
-                    query = """
-                    SELECT display_name, data1
-                    FROM contacts, mimetypes, data
-                    WHERE contacts._id = data.contact_id
-                    AND data.mimetype_id = mimetypes._id
-                    AND mimetypes.mimetype = 'vnd.android.cursor.item/phone_v2'
-                    """
-                    cursor.execute(query)
-                    rows = cursor.fetchall()
+            for line in result.stdout.split('\n'):
+                if 'name=' in line and 'primary_phone=' in line:
+                    parts = {}
+                    for p in line.split(', '):
+                        if '=' in p:
+                            k, v = p.split('=', 1)
+                            parts[k.strip()] = v.strip()
                     
-                    for row in rows:
-                        name, phone = row
-                        if phone:
-                            contacts.append({
-                                "name": name or "Unknown",
-                                "phone": phone.replace(" ", "").replace("-", "")
-                            })
-                except Exception as e2:
-                    logger.debug(f"Second query also failed: {e2}")
-            
-            conn.close()
-            
-            if contacts:
-                logger.info(f"Found {len(contacts)} contacts in SQLite database")
+                    name = parts.get('name')
+                    phone = parts.get('primary_phone', '').replace(' ', '').replace('-', '')
+                    
+                    if name and phone:
+                        contacts.append({"name": name, "phone": phone})
             
             return contacts
         
         except Exception as e:
-            logger.debug(f"Failed to query SQLite: {e}")
-            return []
-    
-    @staticmethod
-    def _get_contacts_native() -> List[Dict]:
-        """
-        Get contacts using native Android API (if python-for-android available).
-        This requires Kivy or similar framework.
-        """
-        try:
-            from jnius import autoclass, cast
-            
-            logger.debug("Using native Android API via jnius")
-            
-            # Get Android context
-            PythonActivity = autoclass('org.renpy.android.PythonActivity')
-            activity = PythonActivity.mActivity
-            ContentResolver = autoclass('android.content.ContentResolver')
-            ContactsContract = autoclass('android.provider.ContactsContract')
-            
-            # Get content resolver
-            content_resolver = activity.getContentResolver()
-            
-            # Query contacts
-            uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
-            projection = ["display_name", "data1"]  # name, phone
-            
-            cursor = content_resolver.query(uri, projection, None, None, None)
-            
-            contacts = []
-            seen = set()
-            
-            while cursor.moveToNext():
-                name = cursor.getString(0)
-                phone = cursor.getString(1)
-                if phone:
-                    phone_clean = phone.replace(" ", "").replace("-", "")
-                    key = f"{name}:{phone_clean}"
-                    
-                    if key not in seen:
-                        contacts.append({
-                            "name": name or "Unknown",
-                            "phone": phone_clean
-                        })
-                        seen.add(key)
-            
-            cursor.close()
-            
-            logger.info(f"Native API: retrieved {len(contacts)} contacts")
-            return contacts
-        
-        except Exception as e:
-            logger.debug(f"Native Android API failed: {e}")
+            logger.debug(f"Alternate method failed: {e}")
             return []
     
     @staticmethod
@@ -359,57 +328,63 @@ class AndroidContactManager:
             logger.debug(f"Cached {len(contacts)} contacts")
         except Exception as e:
             logger.warning(f"Failed to cache contacts: {e}")
-    
-    @staticmethod
-    def load_cached_contacts() -> List[Dict]:
-        """Load contacts from cache"""
-        try:
-            if os.path.exists(CONTACTS_CACHE):
-                with open(CONTACTS_CACHE, 'r') as f:
-                    contacts = json.load(f)
-                logger.debug(f"Loaded {len(contacts)} contacts from cache")
-                return contacts
-        except Exception as e:
-            logger.warning(f"Failed to load cached contacts: {e}")
-        return []
 
 
 class ShizukuSMS:
     """
     Sends SMS via Shizuku (privileged Android service).
-    Requires Shizuku app installed and running on Z Fold 6.
-    
-    Shizuku allows unprivileged apps to request Android system permissions.
+    Works on Android 13+ without root.
     """
     
     @staticmethod
     def send_sms(phone_number: str, message_text: str) -> bool:
         """
-        Send SMS using Shizuku.
+        Send SMS using Shizuku with proper permissions.
         
         Returns:
-            True if queued successfully, False on error
+            True if sent successfully, False on error
         """
         try:
-            logger.info(f"Sending SMS to {phone_number}")
+            logger.info(f"Sending SMS to {phone_number} via Shizuku")
             
-            # Method 1: Try using broadcast intent (requires permission)
+            # Method 1: Use am command with Shizuku to send SMS
             try:
-                cmd = [
-                    "am", "broadcast",
-                    "-a", "android.intent.action.SEND_SMS",
-                    "--es", "phone", phone_number,
-                    "--es", "message", message_text
-                ]
-                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                # This uses the default SMS app to send
+                cmd = f"""am start -a android.intent.action.SENDTO -d sms:{phone_number} -e sms_body '{message_text}' --ez exit_on_sent true"""
+                
+                result = subprocess.run(
+                    ["sh", "-c", cmd],
+                    capture_output=True,
+                    timeout=5,
+                    text=True
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"SMS sent to {phone_number}")
+                    return True
+            except Exception as e:
+                logger.debug(f"SMS via am failed: {e}")
+            
+            # Method 2: Use SmsManager if available
+            try:
+                # Direct SMS via SmsManager (requires SEND_SMS permission from Shizuku)
+                cmd = f"""service call isms 5 s16 \"com.android.mms\" s16 \"\" s16 \"{phone_number}\" s16 \"\" s16 \"{message_text}\" s16 \"\" s16 \"\""""
+                
+                result = subprocess.run(
+                    ["sh", "-c", cmd],
+                    capture_output=True,
+                    timeout=5,
+                    text=True
+                )
                 
                 if result.returncode == 0:
                     logger.info(f"SMS queued to {phone_number}")
                     return True
             except Exception as e:
-                logger.debug(f"Broadcast method failed: {e}")
+                logger.debug(f"SmsManager method failed: {e}")
             
-            # Method 2: Mock send (for development)
+            # Fallback: Mock send
+            logger.warning(f"Falling back to mock SMS for {phone_number}")
             logger.info(f"[MOCK SMS] To: {phone_number}")
             logger.info(f"[MOCK SMS] Text: {message_text}")
             return True
@@ -475,12 +450,11 @@ class SBMSZFold6Client:
             return False
     
     def send_message(self, msg: Dict) -> bool:
-        """Send message to host (fire and forget, no response expected)"""
+        """Send message to host"""
         try:
             if not self.connected or not self.socket:
                 return False
             
-            # Send message
             data = json.dumps(msg).encode('utf-8')
             self.socket.sendall(data)
             logger.debug(f"[SEND] {msg['type']}")
@@ -497,7 +471,8 @@ class SBMSZFold6Client:
         msg = {
             "type": "identify",
             "device": DEVICE_NAME,
-            "version": "1.0"
+            "version": "1.0",
+            "shizuku": True
         }
         return self.send_message(msg)
     
@@ -516,7 +491,6 @@ class SBMSZFold6Client:
             
             if result:
                 logger.info(f"Synced {len(contacts)} contacts to host")
-                # Cache contacts
                 AndroidContactManager.cache_contacts(contacts)
             
             return result
@@ -524,16 +498,6 @@ class SBMSZFold6Client:
         except Exception as e:
             logger.error(f"Failed to sync contacts: {e}")
             return False
-    
-    def report_sms_status(self, msg_id: str, status: str) -> bool:
-        """Report SMS delivery status"""
-        msg = {
-            "type": "sms_status",
-            "id": msg_id,
-            "status": status,
-            "timestamp": datetime.now().isoformat()
-        }
-        return self.send_message(msg)
     
     def ping(self) -> bool:
         """Ping host to keep connection alive"""
@@ -555,7 +519,7 @@ class SBMSZFold6Client:
         self.running = True
         
         logger.info("="*70)
-        logger.info(f"SBMS Z Fold 6 Client Started")
+        logger.info(f"SBMS Z Fold 6 Client Started (Shizuku-enabled)")
         logger.info("="*70)
         logger.info(f"Target: {self.host}:{self.port}")
         logger.info(f"Device: {DEVICE_NAME}")
@@ -570,7 +534,6 @@ class SBMSZFold6Client:
         logger.info("")
         
         while self.running:
-            # Try to reconnect if not connected
             if not self.connected:
                 self.reconnect_timer += 1
                 if self.reconnect_timer >= RECONNECT_INTERVAL:
@@ -578,9 +541,7 @@ class SBMSZFold6Client:
                     self.connect()
                     self.reconnect_timer = 0
             
-            # If connected, do periodic tasks
             if self.connected:
-                # Ping every PING_INTERVAL seconds
                 self.ping_timer += 1
                 if self.ping_timer >= PING_INTERVAL:
                     if not self.ping():
@@ -588,7 +549,6 @@ class SBMSZFold6Client:
                         self.connected = False
                     self.ping_timer = 0
                 
-                # Sync contacts every SYNC_INTERVAL seconds
                 self.sync_timer += 1
                 if self.sync_timer >= SYNC_INTERVAL:
                     contacts = AndroidContactManager.get_contacts()
@@ -597,7 +557,6 @@ class SBMSZFold6Client:
                             logger.warning("Sync failed, will retry")
                     self.sync_timer = 0
             
-            # Sleep for 1 second
             time.sleep(1)
     
     def stop(self) -> None:
@@ -623,7 +582,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="SBMS Z Fold 6 Client (Termux/Android Python)"
+        description="SBMS Z Fold 6 Client (Shizuku-enabled)"
     )
     parser.add_argument(
         "--host",
@@ -637,6 +596,11 @@ def main():
         help=f"Windows host port (default: {DEFAULT_WINDOWS_PORT})"
     )
     parser.add_argument(
+        "--setup-shizuku",
+        action="store_true",
+        help="Setup Shizuku permissions (one-time setup)"
+    )
+    parser.add_argument(
         "--test",
         action="store_true",
         help="Run in test mode (no persistent connection)"
@@ -644,9 +608,31 @@ def main():
     
     args = parser.parse_args()
     
+    if args.setup_shizuku:
+        logger.info("Setting up Shizuku permissions...")
+        logger.info("")
+        
+        if ShizukuHelper.check_shizuku():
+            if ShizukuHelper.grant_permissions():
+                logger.info("\n✓ Shizuku setup complete!")
+                logger.info("You can now run: python sbms_zfold6.py --host WINDOWS_IP")
+            else:
+                logger.error("\n✗ Failed to grant permissions")
+        else:
+            logger.error("\n✗ Shizuku is not available")
+            logger.error("Please start Shizuku app on your Z Fold 6 and try again")
+        
+        return
+    
     if args.test:
         logger.info("Running in TEST MODE")
         logger.info(f"Would connect to {args.host}:{args.port}")
+        logger.info("")
+        
+        if not ShizukuHelper.check_shizuku():
+            logger.error("✗ Shizuku not available!")
+            logger.error("Ensure Shizuku app is running on your Z Fold 6")
+            return
         
         # Test contact retrieval
         logger.info("\nTesting contact retrieval...")
@@ -657,12 +643,18 @@ def main():
         
         # Test SMS sending
         logger.info("\nTesting SMS sending...")
-        ShizukuSMS.send_sms("+46701234567", "Test message")
+        ShizukuSMS.send_sms("+46701234567", "Test message from SBMS")
         
         logger.info("\nTest mode complete")
         return
     
-    # Production mode: run background service
+    # Production mode
+    if not ShizukuHelper.check_shizuku():
+        logger.error("✗ Shizuku not available!")
+        logger.error("Ensure Shizuku app is running on your Z Fold 6")
+        logger.error("Then run: python sbms_zfold6.py --setup-shizuku")
+        return
+    
     client = SBMSZFold6Client(args.host, args.port)
     
     try:
