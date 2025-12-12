@@ -124,28 +124,29 @@ class ContactDatabase:
     
     def __init__(self, db_path: str = CONTACTS_DB):
         self.db_path = Path(db_path)
-        self.contacts: Dict[str, Dict] = {}
+        self.contacts: Dict[str, Dict] = {}  # Key: phone number, Value: contact info
         self._load()
     
     def _load(self) -> None:
         """Load contacts from JSON file"""
         if self.db_path.exists():
             try:
-                with open(self.db_path, 'r') as f:
+                with open(self.db_path, 'r', encoding='utf-8') as f:
                     self.contacts = json.load(f)
                 logger.info(f"Loaded {len(self.contacts)} contacts")
             except Exception as e:
                 logger.error(f"Failed to load contacts: {e}")
                 self.contacts = {}
         else:
-            logger.info("No existing contact database found")
+            logger.info("No existing contact database found, starting fresh")
+            self.contacts = {}
     
     def _save(self) -> None:
         """Save contacts to JSON file"""
         try:
-            with open(self.db_path, 'w') as f:
-                json.dump(self.contacts, f, indent=2)
-            logger.debug(f"Saved {len(self.contacts)} contacts")
+            with open(self.db_path, 'w', encoding='utf-8') as f:
+                json.dump(self.contacts, f, indent=2, ensure_ascii=False)
+            logger.debug(f"Saved {len(self.contacts)} contacts to database")
         except Exception as e:
             logger.error(f"Failed to save contacts: {e}")
     
@@ -166,9 +167,14 @@ class ContactDatabase:
     
     def sync_from_device(self, contacts: List[Dict]) -> None:
         """Sync contacts from Z Fold 6 or other device"""
+        count = 0
         for contact in contacts:
-            self.add_contact(contact.get('phone'), contact.get('name'))
-        logger.info(f"Synced {len(contacts)} contacts from device")
+            phone = contact.get('phone')
+            name = contact.get('name')
+            if phone:
+                self.add_contact(phone, name)
+                count += 1
+        logger.info(f"Synced {count} new/updated contacts from device")
 
 
 class MessageQueue:
@@ -183,18 +189,21 @@ class MessageQueue:
         """Load message log from JSON file"""
         if self.log_path.exists():
             try:
-                with open(self.log_path, 'r') as f:
+                with open(self.log_path, 'r', encoding='utf-8') as f:
                     self.messages = json.load(f)
                 logger.info(f"Loaded {len(self.messages)} messages")
             except Exception as e:
                 logger.error(f"Failed to load messages: {e}")
                 self.messages = {}
+        else:
+            logger.info("No existing message log found, starting fresh")
+            self.messages = {}
     
     def _save(self) -> None:
         """Save message log to JSON file"""
         try:
-            with open(self.log_path, 'w') as f:
-                json.dump(self.messages, f, indent=2)
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                json.dump(self.messages, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save messages: {e}")
     
@@ -363,6 +372,7 @@ class BluetoothServer:
         
         elif msg_type == 'sync_contacts':
             contacts = message.get('contacts', [])
+            logger.info(f"Syncing {len(contacts)} contacts from device")
             self.contacts_db.sync_from_device(contacts)
             return {"type": "ack", "status": "synced"}
         
@@ -514,7 +524,7 @@ class TCPServer:
                 "type": "status",
                 "contacts_count": len(self.contacts_db.get_contacts()),
                 "messages_count": len(self.msg_queue.messages),
-                "devices_connected": len(self.clients),
+                "devices_connected": 1,  # Simplified
                 "timestamp": datetime.now().isoformat()
             }
         
@@ -593,8 +603,8 @@ class SBMSHost:
         logger.info("="*70)
         logger.info("[OK] Bluetooth server listening")
         logger.info("[OK] TCP server listening on 127.0.0.1:9999")
-        logger.info("[OK] Contact database ready")
-        logger.info("[OK] Message queue active")
+        logger.info(f"[OK] Contact database ready ({len(self.contacts_db.get_contacts())} contacts)")
+        logger.info(f"[OK] Message queue active ({len(self.msg_queue.messages)} messages)")
         logger.info("="*70)
         logger.info("")
         logger.info("Press Ctrl+C to shut down...")
