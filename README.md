@@ -1,340 +1,558 @@
-# Samsung Bluetooth Message Service (SBMS)
-
-A complete, production-ready Bluetooth-based messaging system enabling seamless SMS communication between a Samsung Z Fold 6 (Android 16) and a Samsung E1310E classic mobile device.
-
-## 🎯 Project Overview
-
-**SBMS** bridges the gap between modern and retro Samsung devices, allowing the classic Samsung E1310E to send and receive SMS messages through your modern smartphone using Bluetooth Object Push Profile (OPP) as the transport mechanism.
-
-### Why SBMS?
-
-The Samsung E1310E has **no functional SIM card slot** but includes:
-- ✅ Bluetooth 2.0 + EDR (Enhanced Data Rate)
-- ✅ Object Push Profile (OPP) support
-- ✅ Audio/Video Remote Control (AVRCP) support
-- ✅ J2ME MIDP 2.0 runtime environment
-
-**SBMS leverages these capabilities** to create a bidirectional messaging system without requiring a SIM card.
-
-## 📁 Repository Structure
-
-```
-SBMS/
-├── README.md                          # This file
-├── service.md                         # Complete technical specification
-├── docs/
-│   ├── ARCHITECTURE.md               # System design documentation
-│   ├── BLUETOOTH_PROTOCOL.md         # OPP/OBEX protocol reference
-│   ├── MESSAGE_FORMAT.md             # vCard message specification
-│   └── TROUBLESHOOTING.md            # Connection diagnostics
-├── android-apk/                      # Z Fold 6 Android app (Java)
-│   ├── README.md
-│   ├── build.gradle
-│   ├── AndroidManifest.xml
-│   └── src/
-│       └── com/oscyra/sbms/
-│           ├── MainActivity.java
-│           ├── services/
-│           ├── ui/
-│           ├── models/
-│           └── utils/
-├── E1310E-app/                       # Samsung E1310E app (J2ME)
-│   ├── README.md
-│   ├── build.xml
-│   └── src/
-│       └── com/oscyra/sbms/
-│           ├── SBMSApp.java
-│           ├── ui/
-│           ├── bluetooth/
-│           └── models/
-└── shared/                           # Shared specifications & formats
-    ├── message-schema.md
-    └── test-vectors.json
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Z Fold 6** running Android 16 with:
-  - Java Development Kit (JDK 11+)
-  - Bluetooth enabled
-  - SMS permissions granted
-  
-- **Samsung E1310E** with:
-  - Bluetooth enabled
-  - J2ME runtime (built-in)
-  - Paired with Z Fold 6
-
-### Installation
-
-#### Android APK (Z Fold 6)
-
-```bash
-cd android-apk
-./gradlew assembleDebug
-adb install build/outputs/apk/debug/SBMS.apk
-```
-
-**Or use prebuilt APK:**
-```bash
-# Download from Releases section
-adb install SBMS-release.apk
-```
-
-#### E1310E J2ME App
-
-```bash
-cd E1310E-app
-./build.sh
-# Transfer SBMS.jar to E1310E via:
-# - Bluetooth File Transfer
-# - USB cable with file manager
-# - Phone's J2ME app installer
-```
-
-### Basic Usage
-
-**Sending Message from E1310E:**
-1. Navigate: Menu → SBMS
-2. Select "New Message"
-3. Choose recipient from Contacts
-4. Type message (160 chars max)
-5. Select "Send via Bluetooth"
-6. Phone receives, parses, and sends SMS
-7. E1310E receives status confirmation
-
-## 🔧 Technical Stack
-
-### Android APK (Z Fold 6)
-- **Language:** Java
-- **Framework:** Android API 30+
-- **Build System:** Gradle
-- **Key Libraries:**
-  - `android.bluetooth` - Bluetooth stack
-  - `android.telephony` - SMS API
-  - AndroidX support libraries
-  - Material Design 3
-
-### E1310E App
-- **Language:** J2ME (Java MIDP 2.0)
-- **Build System:** Custom build.xml
-- **Key APIs:**
-  - `javax.microedition.io.Connector` - Bluetooth RFCOMM
-  - `javax.obex` - OBEX protocol (if available)
-  - `javax.microedition.io.PushRegistry` - OPP server
-  - J2ME UI (Form, List, Alert)
-
-## 📋 Features
-
-### Core Messaging
-- ✅ Compose and send SMS from E1310E
-- ✅ Receive SMS and display on E1310E
-- ✅ Contact synchronization from Z Fold 6
-- ✅ Message history and archives
-- ✅ Delivery receipts and status tracking
-
-### UI/UX
-- ✅ Modern Material Design 3 on Android
-- ✅ Classic Samsung UI on E1310E (adapted for screen)
-- ✅ Touch-optimized on Z Fold 6
-- ✅ D-Pad/soft-key navigation on E1310E
-- ✅ Real-time connection status indicators
-
-### Advanced Features
-- ✅ Automatic contact syncing
-- ✅ Message search functionality
-- ✅ Draft message persistence
-- ✅ Bluetooth connection recovery
-- ✅ vCard message format with CRC32 validation
-- ✅ Multi-recipient capabilities
-
-## 🔌 Connection Architecture
-
-```
-Z Fold 6 (Android 16)           E1310E (J2ME)
-├─ OPP Server                   ├─ OPP Server
-│  (Receives files)             │  (Receives files)
-├─ OPP Client                   ├─ OPP Client
-│  (Sends files)                │  (Sends files)
-├─ SMS Manager                  ├─ Bluetooth Manager
-│  (Send actual SMS)            │  (File push/receive)
-└─ Status Handler               └─ Message Handler
-   (Parse responses)               (Parse responses)
-         
-         ↕ Bluetooth OPP ↕
-    (OBEX over RFCOMM)
-```
-
-## 📱 Message Format (vCard Extended)
-
-Messages are serialized as vCard 2.1 with X-SBMS extensions:
-
-```
-BEGIN:VCARD
-VERSION:2.1
-PRODID:-//SBMS//1.0//EN
-X-SBMS-MSG:true
-X-SBMS-TO:+46701234567
-X-SBMS-TEXT:Hello from E1310E
-X-SBMS-PRIORITY:1
-X-SBMS-TIMESTAMP:20251211T150700Z
-X-SBMS-UUID:abc123def456
-X-SBMS-CRC32:0xA1B2C3D4
-END:VCARD
-```
-
-## 🛠️ Building from Source
-
-### Full Build (Both Platforms)
-
-```bash
-./build-all.sh
-# Outputs:
-# - build/android/SBMS.apk
-# - build/e1310e/SBMS.jar
-# - build/e1310e/SBMS.jad
-```
-
-### Android Only
-
-```bash
-cd android-apk
-./gradlew clean build
-# Output: build/outputs/apk/release/SBMS-release.apk
-```
-
-### E1310E Only
-
-```bash
-cd E1310E-app
-./build.sh
-# Output: build/SBMS.jar
-```
-
-## 🧪 Testing
-
-### Unit Tests
-```bash
-cd android-apk
-./gradlew test
-```
-
-### Integration Tests
-```bash
-cd E1310E-app
-python3 test/test_vcard_parser.py
-```
-
-### Manual Testing Checklist
-- [ ] Pairing E1310E with Z Fold 6
-- [ ] OPP service discovery (SDP query)
-- [ ] Single message transfer E1310E → Z Fold 6
-- [ ] Status response Z Fold 6 → E1310E
-- [ ] Multiple consecutive messages
-- [ ] Contact sync from Z Fold 6 to E1310E
-- [ ] SMS delivery on actual carrier network
-- [ ] Bluetooth reconnection after disconnect
-- [ ] Message character encoding (Swedish special chars)
-
-## 🐛 Troubleshooting
-
-### Connection Failed Error
-**Symptom:** "Error - Connection Failed" when trying to establish Bluetooth connection
-
-**Solutions:**
-1. Ensure both devices are paired (not just discoverable)
-2. Check that OPP service is enabled on both devices
-3. Verify Bluetooth MAC address matches (Settings → About)
-4. Restart Bluetooth on both devices
-5. Increase RFCOMM connection timeout (see `service.md` Part 5)
-
-### Messages Not Appearing
-**Symptom:** E1310E sends message, but phone doesn't receive
-
-**Diagnosis:**
-```bash
-# Check Android logcat
-adb logcat | grep SBMS
-
-# Verify Bluetooth file transfer working
-adb shell ls -la /sdcard/Download/Bluetooth/
-```
-
-### E1310E App Won't Install
-**Symptom:** "Installation failed" when loading SBMS.jar
-
-**Solutions:**
-1. Verify JAR is properly signed for Samsung J2ME
-2. Check available storage on E1310E (Menu → Settings → Memory)
-3. Use file manager to manually place JAR in correct directory
-4. Check J2ME compatibility (MIDP 2.0 minimum required)
-
-See **docs/TROUBLESHOOTING.md** for complete diagnostics.
-
-## 📖 Documentation
-
-- **[service.md](service.md)** - Complete technical specification with protocol details
-- **[android-apk/README.md](android-apk/README.md)** - Android APK build & development guide
-- **[E1310E-app/README.md](E1310E-app/README.md)** - E1310E J2ME app development guide
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System design and flow diagrams
-- **[docs/BLUETOOTH_PROTOCOL.md](docs/BLUETOOTH_PROTOCOL.md)** - Detailed OPP/OBEX protocol reference
-- **[docs/MESSAGE_FORMAT.md](docs/MESSAGE_FORMAT.md)** - vCard message schema and extensions
-
-## 🔐 Security Considerations
-
-### Bluetooth Security
-- All OPP transfers use Bluetooth v2.0 encryption (when paired)
-- Messages transmitted over OPP channel are not encrypted beyond Bluetooth layer
-- PIN used for pairing should be strong (not 0000)
-
-### SMS Security
-- No end-to-end encryption (limited by SMS standard)
-- Messages visible on both devices locally
-- Phone stores messages in standard SMS database
-- E1310E stores in `/Message/` directory (readable by other apps)
-
-### Recommendations
-- Keep both devices in physical control
-- Use strong Bluetooth pairing PIN
-- Don't send sensitive data (passwords, tokens) via SBMS
-- Regularly clear message history if needed
-- Disable Bluetooth when not in use
-
-## 🤝 Contributing
-
-Contributions welcome! Areas for improvement:
-- E2E encryption layer
-- Multi-recipient group messaging
-- Media message support (MMS)
-- Cross-platform compatibility (iOS)
-- Performance optimizations
-- Additional language support
-
-## 📄 License
-
-MIT License - See LICENSE file for details
-
-## 👤 Author
-
-Alex Jonsson (@CKCHDX)
-
-## 🔗 Links
-
-- **GitHub:** https://github.com/CKCHDX/SBMS
-- **Website:** https://oscyra.solutions/
-- **Issues:** https://github.com/CKCHDX/SBMS/issues
-
-## 📞 Support
-
-For issues, questions, or suggestions:
-1. Check **docs/TROUBLESHOOTING.md**
-2. Review **service.md** technical specification
-3. Search existing GitHub issues
-4. Create new issue with detailed description
+# SBMS - Samsung Bluetooth Message Service
+## Architecture & Implementation Guide
 
 ---
 
-**Status:** 🚧 In Development
-**Last Updated:** December 11, 2025
-**Current Version:** 0.1.0 (Alpha)
+## 📋 Project Overview
+
+**SBMS** is a **distributed message relay system** that bridges three devices:
+- **Samsung E1310E** (2003 J2ME phone) - Message client
+- **Samsung Z Fold 6** (Android) - Contact sync + SMS relay
+- **Windows Host** (Python) - Control center & relay server
+
+All devices communicate via **Bluetooth** with the Windows host acting as the central hub.
+
+---
+
+## 🏗️ Architecture
+
+### System Topology
+
+```
+                    Windows Host (Python)
+                    ├─ Bluetooth Server
+                    ├─ TCP Control Center
+                    ├─ Contact Database
+                    └─ Message Router
+                         ↓ ↑
+                    ┌────┴─────┐
+                    ↓          ↓
+            E1310E (J2ME)   Z Fold 6 (Python/Termux)
+            ├─ Bluetooth    ├─ Bluetooth/TCP
+            ├─ Message UI   ├─ Contact Sync
+            └─ Send/Receive └─ SMS Relay
+```
+
+### Data Flow
+
+#### 1. **Contact Synchronization**
+```
+Z Fold 6 → Windows Host → E1310E
+(Reads contacts from device) → (Stores in JSON DB) → (Distributes to E1310E)
+```
+
+#### 2. **Message Sending**
+```
+E1310E User sends message
+    ↓
+E1310E app → Bluetooth → Windows Host
+    ↓
+Windows Host → TCP → Z Fold 6 (Termux Python)
+    ↓
+Z Fold 6 executes SMS via Shizuku
+    ↓
+Message sent to recipient
+    ↓
+Z Fold 6 → Windows Host → E1310E (Delivery status)
+```
+
+#### 3. **Real-time Synchronization**
+```
+Windows Control Center (UI) ← TCP ← Windows Host
+    ↓
+Displays:
+  - Connected devices status
+  - All contacts
+  - Message history
+  - Delivery status
+```
+
+---
+
+## 🔧 Components
+
+### 1. Windows Host (`sbms_windows_host.py`)
+
+**Purpose**: Central relay server & contact database
+
+**Features**:
+- Bluetooth RFCOMM server (receives E1310E & Z Fold 6 connections)
+- TCP server for local UI control center
+- JSON-based contact database
+- Message queuing & routing
+- Connection state management
+- Logging & monitoring
+
+**Dependencies**:
+```
+python 3.8+
+pybluez (pip install pybluez)
+```
+
+**Communication Protocol** (JSON over Bluetooth/TCP):
+
+```json
+// E1310E ping
+{"type": "ping"}
+
+// Z Fold 6 sync contacts
+{"type": "sync_contacts", "contacts": [
+  {"name": "Alice", "phone": "+46701234567"},
+  {"name": "Bob", "phone": "+46702345678"}
+]}
+
+// E1310E request contacts
+{"type": "get_contacts"}
+
+// E1310E send message
+{"type": "send_message", "to": "+46701234567", "text": "Hello", "id": "msg001"}
+
+// Z Fold 6 delivery status
+{"type": "sms_status", "id": "msg001", "status": "delivered"}
+```
+
+**Starting the Host**:
+```bash
+python sbms_windows_host.py
+```
+
+---
+
+### 2. E1310E Client (`e1310e_sbms.jad` + `e1310e_sbms.jar`)
+
+**Platform**: J2ME MIDP 2.0 / CLDC 1.1
+
+**Purpose**: Message client for Samsung E1310E
+
+**Features**:
+- Bluetooth RFCOMM client connection
+- Contact list display (retrieved from Windows)
+- Message composition UI
+- Send/receive messages via Windows relay
+- Delivery status notifications
+- Minimal memory footprint (<200KB)
+
+**Building**:
+```bash
+cd SBMS-E1310E-app
+set WTK_HOME=C:\WTK2.5.2
+ant clean jar
+```
+
+**Output**: `dist/SBMS.jar`
+
+**Deployment**:
+```bash
+obexftp -b E1:31:0E:XX:XX:XX -p dist/SBMS.jar
+```
+
+**J2ME Code Structure**:
+```
+src/
+├─ com/oscyra/sbms/
+│  ├─ SBMS.java (Main MIDlet)
+│  ├─ ui/
+│  │  ├─ ContactListScreen.java
+│  │  ├─ MessageComposerScreen.java
+│  │  └─ StatusScreen.java
+│  └─ bluetooth/
+│     └─ BluetoothManager.java
+```
+
+---
+
+### 3. Z Fold 6 Client (`sbms_zfold6.py`)
+
+**Platform**: Android + Termux (Python)
+
+**Purpose**: Contact sync + SMS relay bridge
+
+**Features**:
+- Reads contacts from Z Fold 6 Android system
+- Syncs contacts to Windows host
+- Receives SMS send requests from Windows
+- Uses Shizuku for privileged SMS access
+- Maintains persistent TCP/Bluetooth connection
+- Background service (systemd or Termux startup)
+
+**Installation**:
+```bash
+# On Z Fold 6 in Termux
+pkg install python android-api
+pip install pybluez requests
+
+# Copy script
+cp sbms_zfold6.py $PREFIX/bin/sbms_zfold6
+chmod +x $PREFIX/bin/sbms_zfold6
+
+# Run in background
+nohup sbms_zfold6 > sbms.log 2>&1 &
+```
+
+**Code Overview**:
+```python
+class ZFold6Client:
+    def connect_to_windows(self):
+        # Connect to Windows host via Bluetooth/TCP
+        
+    def sync_contacts(self):
+        # Read contacts from Android ContactsProvider
+        # Send to Windows host
+        
+    def listen_for_commands(self):
+        # Wait for SMS send requests from Windows
+        
+    def send_sms_via_shizuku(self, to, text):
+        # Use Shizuku to execute privileged SMS send
+        # Report status back to Windows
+        
+    def maintain_connection(self):
+        # Keep-alive pings, reconnect on failure
+```
+
+---
+
+### 4. Windows Control Center UI
+
+**Type**: PyQt6 desktop application (Windows 7/10)
+
+**Purpose**: Management interface for Windows host
+
+**Features**:
+- Real-time device connection status
+- Contact list view & search
+- Compose & send messages
+- Message history
+- Delivery receipts
+- Device management (pair new devices)
+
+**Building**:
+```bash
+pip install PyQt6
+python sbms_control_center.py
+```
+
+---
+
+## 📱 Device Specifications
+
+### Samsung E1310E
+- **OS**: J2ME MIDP 2.0
+- **Memory**: 10 MB
+- **Bluetooth**: RFCOMM
+- **Screen**: 96×65 pixels
+- **Year**: 2003
+
+### Samsung Z Fold 6
+- **OS**: Android 14
+- **Bluetooth**: BLE + Classic
+- **Runtime**: Termux (Python 3.10+)
+- **Features**: Shizuku support, ContactsProvider API
+
+### Windows Host
+- **OS**: Windows 7 / Windows 10+
+- **Python**: 3.8+
+- **Bluetooth**: USB adapter (CSR 4.0 recommended)
+- **Role**: Central relay server
+
+---
+
+## 🔐 Security Considerations
+
+### Current Implementation
+- **Local network only** (Bluetooth + TCP on localhost)
+- **No encryption** (suitable for LAN)
+- **MAC address filtering** (E1310E & Z Fold 6 hardcoded)
+
+### Production Hardening (Future)
+- TLS/SSL encryption (Bluetooth + TCP)
+- Token-based authentication
+- Message signing
+- Rate limiting
+- Firewall rules
+
+---
+
+## 🚀 Getting Started
+
+### Step 1: Prepare Windows Host
+
+```bash
+# Install Python 3.8+
+# Download: https://www.python.org/downloads/
+
+# Install Bluetooth library
+pip install pybluez
+
+# Clone repository
+git clone https://github.com/CKCHDX/SBMS.git
+cd SBMS
+```
+
+### Step 2: Pair Devices
+
+**E1310E**:
+```bash
+# On Windows, use Bluetooth settings
+# Pair E1310E manually
+# Note MAC address: E1:31:0E:XX:XX:XX
+```
+
+**Z Fold 6**:
+```bash
+# On Z Fold 6, pair Windows via Bluetooth
+# Note Windows Bluetooth MAC
+# Install Termux
+# Copy sbms_zfold6.py
+```
+
+### Step 3: Build & Deploy
+
+**E1310E JAR**:
+```bash
+cd SBMS-E1310E-app
+set WTK_HOME=C:\WTK2.5.2
+ant clean jar
+obexftp -b E1:31:0E:XX:XX:XX -p dist/SBMS.jar
+```
+
+**Z Fold 6 Script**:
+```bash
+# In Termux
+pip install -r requirements.txt
+python sbms_zfold6.py
+```
+
+**Windows Host**:
+```bash
+python sbms_windows_host.py
+```
+
+### Step 4: Verify Connections
+
+All three should show:
+```
+Windows Host Log:
+✓ Bluetooth server listening
+✓ E1310E connected
+✓ Z Fold 6 connected
+✓ Contacts synced (N items)
+```
+
+---
+
+## 📝 API Reference
+
+### Bluetooth Message Protocol
+
+#### Client → Host
+
+```json
+// Connection handshake
+{
+  "type": "identify",
+  "device": "e1310e|zfold6",
+  "version": "1.0"
+}
+
+// Keep-alive
+{"type": "ping"}
+
+// E1310E: Get contacts
+{"type": "get_contacts"}
+
+// E1310E: Send message
+{
+  "type": "send_message",
+  "to": "+46701234567",
+  "text": "Hello World",
+  "id": "msg001"
+}
+
+// Z Fold 6: Sync contacts
+{
+  "type": "sync_contacts",
+  "contacts": [
+    {"name": "Alice", "phone": "+46701234567"},
+    {"name": "Bob", "phone": "+46702345678"}
+  ]
+}
+
+// Z Fold 6: SMS delivery status
+{
+  "type": "sms_status",
+  "id": "msg001",
+  "status": "delivered|failed",
+  "timestamp": "2025-12-12T09:50:00"
+}
+```
+
+#### Host → Client
+
+```json
+// Response
+{
+  "type": "contacts",
+  "data": {
+    "+46701234567": {"name": "Alice", "phone": "+46701234567"},
+    "+46702345678": {"name": "Bob", "phone": "+46702345678"}
+  }
+}
+
+// Command (Host → Z Fold 6)
+{
+  "type": "send_sms",
+  "to": "+46701234567",
+  "text": "Hello",
+  "id": "msg001"
+}
+
+// Notification (Host → E1310E)
+{
+  "type": "contacts_updated",
+  "contacts": {...}
+}
+
+// Status response
+{"type": "ack", "status": "ok"}
+```
+
+---
+
+## 📊 Database Schema
+
+### `contacts.json`
+```json
+{
+  "+46701234567": {
+    "name": "Alice",
+    "phone": "+46701234567",
+    "added": "2025-12-12T09:50:00",
+    "last_contact": "2025-12-12T10:15:00"
+  },
+  "+46702345678": {
+    "name": "Bob",
+    "phone": "+46702345678",
+    "added": "2025-12-12T09:45:00",
+    "last_contact": null
+  }
+}
+```
+
+### Message Log (SQLite, future)
+```sql
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY,
+  from_device TEXT,  -- "e1310e" or "zfold6"
+  to_number TEXT,
+  text TEXT,
+  status TEXT,  -- "pending", "sent", "delivered", "failed"
+  timestamp DATETIME,
+  retry_count INT DEFAULT 0
+);
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### E1310E won't connect
+1. Verify MAC address in `sbms_windows_host.py`
+2. Check Bluetooth pairing on Windows
+3. Ensure Bluetooth adapter is enabled
+4. Test with standard J2ME Bluetooth app first
+
+### Z Fold 6 connection drops
+1. Check Termux Python is running
+2. Verify Shizuku permissions
+3. Check network connectivity (TCP fallback)
+4. Review `sbms.log` for errors
+
+### Messages not sending
+1. Verify Z Fold 6 has SMS permission
+2. Check Windows host is receiving commands
+3. Review delivery status in log
+4. Test SMS manually first via Shizuku
+
+### Windows host crashes
+1. Check Python version (3.8+)
+2. Verify `pybluez` is installed
+3. Review logs in `sbms_host.log`
+4. Restart Bluetooth service
+
+---
+
+## 📚 Project Structure
+
+```
+SBMS/
+├── README.md (this file)
+├── requirements.txt
+├── sbms_windows_host.py
+├── sbms_zfold6.py
+├── sbms_control_center.py
+│
+├── SBMS-E1310E-app/
+│  ├── build.xml
+│  ├── build.properties
+│  ├── src/com/oscyra/sbms/
+│  │  ├── SBMS.java
+│  │  ├── ui/
+│  │  │  ├── ContactListScreen.java
+│  │  │  ├── MessageComposerScreen.java
+│  │  │  └─ StatusScreen.java
+│  │  └─ bluetooth/
+│  │     └─ BluetoothManager.java
+│  ├── lib/
+│  └── dist/
+│     └─ SBMS.jar
+│
+└── .github/
+   └── workflows/
+      └─ e1310e-build.yml
+```
+
+---
+
+## 🔄 Development Workflow
+
+### Building E1310E
+```bash
+cd SBMS-E1310E-app
+set WTK_HOME=C:\WTK2.5.2
+ant clean jar
+# Output: dist/SBMS.jar (~60KB)
+```
+
+### Testing Windows Host
+```bash
+python sbms_windows_host.py
+# Logs to: sbms_host.log
+```
+
+### Testing Z Fold 6 Script
+```bash
+# In Termux
+python sbms_zfold6.py --test
+# Mock connections for development
+```
+
+---
+
+## 📞 Contact & Support
+
+**Project**: SBMS (Samsung Bluetooth Message Service)  
+**Author**: Alex Jonsson  
+**Repository**: https://github.com/CKCHDX/SBMS  
+**Location**: Kista, Sweden  
+
+---
+
+## 📄 License
+
+This project is provided as-is for educational and personal use.
+
+---
+
+**Last Updated**: December 12, 2025  
+**Status**: Architecture & Initial Implementation
