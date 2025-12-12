@@ -67,9 +67,14 @@ BASE_PATH = os.path.expanduser("~/.sbms")
 LOG_FILE = os.path.join(BASE_PATH, "zfold6.log")
 CONTACTS_CACHE = os.path.join(BASE_PATH, "contacts_cache.json")
 
-# Android Contacts Database Path
-ANDROID_CONTACTS_DB = "/data/data/com.android.providers.contacts/databases/contacts2.db"
-ANDROID_CONTACTS_DB_ALT = "/data/data/com.android.providers.contacts/databases/contacts.db"
+# Android Contacts Database Paths (multiple versions)
+ANDROID_CONTACTS_DB_PATHS = [
+    "/data/data/com.android.providers.contacts/databases/contacts2.db",
+    "/data/data/com.android.providers.contacts/databases/contacts.db",
+    "/data/data/com.google.android.contacts/databases/contacts.db",
+    "/data/user/0/com.android.providers.contacts/databases/contacts2.db",
+    "/data/user/0/com.android.providers.contacts/databases/contacts.db",
+]
 
 # Create directories
 os.makedirs(BASE_PATH, exist_ok=True)
@@ -102,16 +107,16 @@ class AndroidContactManager:
     def get_contacts() -> List[Dict]:
         """Get all contacts from Android"""
         
-        # Method 1: Try SQLite database query (most reliable)
+        # Method 1: Try content command (Termux-specific)
+        contacts = AndroidContactManager._get_contacts_via_content_cmd()
+        if contacts:
+            logger.info(f"Retrieved {len(contacts)} contacts via content command")
+            return contacts
+        
+        # Method 2: Try SQLite database query
         contacts = AndroidContactManager._get_contacts_from_sqlite()
         if contacts:
             logger.info(f"Retrieved {len(contacts)} contacts from SQLite database")
-            return contacts
-        
-        # Method 2: Try dumpsys command
-        contacts = AndroidContactManager._get_contacts_from_dumpsys()
-        if contacts:
-            logger.info(f"Retrieved {len(contacts)} contacts from dumpsys")
             return contacts
         
         # Method 3: Try native Android API
@@ -128,18 +133,86 @@ class AndroidContactManager:
         return AndroidContactManager._get_test_contacts()
     
     @staticmethod
+    def _get_contacts_via_content_cmd() -> List[Dict]:
+        """Query contacts using Termux 'content' command"""
+        try:
+            logger.debug("Attempting to get contacts via content command")
+            
+            # Use content command to query contacts
+            # This is available in Termux
+            cmd = [
+                "content", "query",
+                "--uri", "content://com.android.contacts/contacts",
+                "--projection", "display_name:phone_number"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=10,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.debug(f"content command failed: {result.stderr}")
+                return []
+            
+            # Parse output
+            contacts = []
+            seen = set()
+            
+            lines = result.stdout.split('\n')
+            for line in lines:
+                # Line format: display_name=Name, phone_number=+46701234567
+                if '=' in line and 'display_name' in line:
+                    # Extract name and phone from line
+                    parts = line.split(', ')
+                    contact_data = {}
+                    
+                    for part in parts:
+                        if '=' in part:
+                            key, value = part.split('=', 1)
+                            contact_data[key.strip()] = value.strip()
+                    
+                    if 'display_name' in contact_data and 'phone_number' in contact_data:
+                        name = contact_data['display_name']
+                        phone = contact_data['phone_number'].replace(' ', '').replace('-', '')
+                        
+                        key = f"{name}:{phone}"
+                        if key not in seen and phone:
+                            contacts.append({
+                                "name": name,
+                                "phone": phone
+                            })
+                            seen.add(key)
+                            logger.debug(f"Found contact: {name} - {phone}")
+            
+            if contacts:
+                logger.info(f"Found {len(contacts)} contacts via content command")
+            
+            return contacts
+        
+        except FileNotFoundError:
+            logger.debug("content command not found in Termux")
+            return []
+        except Exception as e:
+            logger.debug(f"content command failed: {e}")
+            return []
+    
+    @staticmethod
     def _get_contacts_from_sqlite() -> List[Dict]:
         """Query contacts from Android SQLite database"""
         try:
-            # Try primary database path
-            db_path = ANDROID_CONTACTS_DB
+            # Try each possible database path
+            db_path = None
+            for path in ANDROID_CONTACTS_DB_PATHS:
+                if os.path.exists(path):
+                    db_path = path
+                    logger.debug(f"Found contacts database at {db_path}")
+                    break
             
-            if not os.path.exists(db_path):
-                # Try alternative path
-                db_path = ANDROID_CONTACTS_DB_ALT
-            
-            if not os.path.exists(db_path):
-                logger.debug(f"Contacts database not found at {db_path}")
+            if not db_path:
+                logger.debug(f"Contacts database not found in any known path")
                 return []
             
             logger.debug(f"Querying contacts from {db_path}")
@@ -148,38 +221,61 @@ class AndroidContactManager:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
-            # Query contacts with phone numbers
-            # This queries the phone data from the contacts database
-            query = """
-            SELECT DISTINCT
-                c.display_name AS name,
-                p.data1 AS phone
-            FROM contacts c
-            LEFT JOIN data d ON c._id = d.contact_id
-            LEFT JOIN phone_lookup p ON c._id = p.contact_id
-            WHERE p.data1 IS NOT NULL
-            ORDER BY c.display_name
-            """
-            
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            
+            # Try different query approaches
             contacts = []
-            seen = set()  # Avoid duplicates
             
-            for row in rows:
-                name, phone = row
-                if phone and name:
-                    # Normalize phone number (remove spaces, dashes)
-                    phone_clean = phone.replace(" ", "").replace("-", "")
-                    key = f"{name}:{phone_clean}"
+            # First try: contacts table with phone lookup
+            try:
+                query = """
+                SELECT DISTINCT
+                    c.display_name,
+                    p.data1
+                FROM contacts c
+                LEFT JOIN data d ON c._id = d.contact_id
+                LEFT JOIN phone_lookup p ON c._id = p.contact_id
+                WHERE p.data1 IS NOT NULL AND c.display_name IS NOT NULL
+                ORDER BY c.display_name
+                """
+                cursor.execute(query)
+                rows = cursor.fetchall()
+                
+                seen = set()
+                for row in rows:
+                    name, phone = row
+                    if phone and name:
+                        phone_clean = phone.replace(" ", "").replace("-", "")
+                        key = f"{name}:{phone_clean}"
+                        
+                        if key not in seen:
+                            contacts.append({
+                                "name": name,
+                                "phone": phone_clean
+                            })
+                            seen.add(key)
+            except Exception as e:
+                logger.debug(f"First query failed: {e}")
+                
+                # Second try: simpler query
+                try:
+                    query = """
+                    SELECT display_name, data1
+                    FROM contacts, mimetypes, data
+                    WHERE contacts._id = data.contact_id
+                    AND data.mimetype_id = mimetypes._id
+                    AND mimetypes.mimetype = 'vnd.android.cursor.item/phone_v2'
+                    """
+                    cursor.execute(query)
+                    rows = cursor.fetchall()
                     
-                    if key not in seen:
-                        contacts.append({
-                            "name": name,
-                            "phone": phone_clean
-                        })
-                        seen.add(key)
+                    for row in rows:
+                        name, phone = row
+                        if phone:
+                            contacts.append({
+                                "name": name or "Unknown",
+                                "phone": phone.replace(" ", "").replace("-", "")
+                            })
+                except Exception as e2:
+                    logger.debug(f"Second query also failed: {e2}")
             
             conn.close()
             
@@ -188,45 +284,8 @@ class AndroidContactManager:
             
             return contacts
         
-        except sqlite3.OperationalError as e:
-            logger.debug(f"SQLite error (database locked or incorrect schema): {e}")
-            return []
         except Exception as e:
             logger.debug(f"Failed to query SQLite: {e}")
-            return []
-    
-    @staticmethod
-    def _get_contacts_from_dumpsys() -> List[Dict]:
-        """Query contacts using dumpsys command"""
-        try:
-            logger.debug("Attempting to get contacts from dumpsys")
-            
-            # This is a fallback method that may not work in Termux sandbox
-            result = subprocess.run(
-                ["dumpsys", "contacts"],
-                capture_output=True,
-                timeout=5,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                logger.debug(f"dumpsys failed: {result.stderr}")
-                return []
-            
-            # Parse output (simple heuristic)
-            contacts = []
-            lines = result.stdout.split('\n')
-            
-            for line in lines:
-                # Look for lines with phone numbers
-                if '+' in line or line.startswith('0'):
-                    # Extract phone and name from nearby lines
-                    pass  # This is complex, skip for now
-            
-            return contacts
-        
-        except Exception as e:
-            logger.debug(f"dumpsys method failed: {e}")
             return []
     
     @staticmethod
@@ -237,17 +296,14 @@ class AndroidContactManager:
         """
         try:
             from jnius import autoclass, cast
-            from android.runnable import run_on_ui_thread
             
             logger.debug("Using native Android API via jnius")
             
             # Get Android context
             PythonActivity = autoclass('org.renpy.android.PythonActivity')
             activity = PythonActivity.mActivity
-            Context = autoclass('android.content.Context')
             ContentResolver = autoclass('android.content.ContentResolver')
             ContactsContract = autoclass('android.provider.ContactsContract')
-            Cursor = autoclass('android.database.Cursor')
             
             # Get content resolver
             content_resolver = activity.getContentResolver()
@@ -259,14 +315,21 @@ class AndroidContactManager:
             cursor = content_resolver.query(uri, projection, None, None, None)
             
             contacts = []
+            seen = set()
+            
             while cursor.moveToNext():
                 name = cursor.getString(0)
                 phone = cursor.getString(1)
                 if phone:
-                    contacts.append({
-                        "name": name or "Unknown",
-                        "phone": phone.replace(" ", "").replace("-", "")
-                    })
+                    phone_clean = phone.replace(" ", "").replace("-", "")
+                    key = f"{name}:{phone_clean}"
+                    
+                    if key not in seen:
+                        contacts.append({
+                            "name": name or "Unknown",
+                            "phone": phone_clean
+                        })
+                        seen.add(key)
             
             cursor.close()
             
