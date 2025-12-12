@@ -18,6 +18,7 @@ Requirements (in Termux):
 - sys (builtin)
 - os (builtin)
 - subprocess (builtin)
+- sqlite3 (builtin)
 
 Optional:
 - android-api (for native Android contact access)
@@ -40,6 +41,7 @@ import threading
 import logging
 import subprocess
 import os
+import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -65,6 +67,10 @@ BASE_PATH = os.path.expanduser("~/.sbms")
 LOG_FILE = os.path.join(BASE_PATH, "zfold6.log")
 CONTACTS_CACHE = os.path.join(BASE_PATH, "contacts_cache.json")
 
+# Android Contacts Database Path
+ANDROID_CONTACTS_DB = "/data/data/com.android.providers.contacts/databases/contacts2.db"
+ANDROID_CONTACTS_DB_ALT = "/data/data/com.android.providers.contacts/databases/contacts.db"
+
 # Create directories
 os.makedirs(BASE_PATH, exist_ok=True)
 
@@ -89,66 +95,192 @@ logger = logging.getLogger(__name__)
 class AndroidContactManager:
     """
     Reads contacts from Android ContentProvider in Termux.
-    Tries native Android API first, falls back to command-line tools.
+    Tries multiple methods to get real contacts from Android 16.
     """
     
     @staticmethod
     def get_contacts() -> List[Dict]:
         """Get all contacts from Android"""
+        
+        # Method 1: Try SQLite database query (most reliable)
+        contacts = AndroidContactManager._get_contacts_from_sqlite()
+        if contacts:
+            logger.info(f"Retrieved {len(contacts)} contacts from SQLite database")
+            return contacts
+        
+        # Method 2: Try dumpsys command
+        contacts = AndroidContactManager._get_contacts_from_dumpsys()
+        if contacts:
+            logger.info(f"Retrieved {len(contacts)} contacts from dumpsys")
+            return contacts
+        
+        # Method 3: Try native Android API
         try:
-            # Try using native Python android module (if available)
-            try:
-                import android
-                from jnius import autoclass
-                
-                logger.info("Using native Android API")
-                return AndroidContactManager._get_contacts_native()
-            except ImportError:
-                logger.debug("Native Android API not available")
+            contacts = AndroidContactManager._get_contacts_native()
+            if contacts:
+                logger.info(f"Retrieved {len(contacts)} contacts from native API")
+                return contacts
         except Exception as e:
             logger.debug(f"Native API failed: {e}")
         
-        # Fallback to command-line tools
+        # Fallback: Test contacts
+        logger.warning("Could not get real contacts, using test contacts")
+        return AndroidContactManager._get_test_contacts()
+    
+    @staticmethod
+    def _get_contacts_from_sqlite() -> List[Dict]:
+        """Query contacts from Android SQLite database"""
         try:
-            return AndroidContactManager._get_contacts_via_cmd()
+            # Try primary database path
+            db_path = ANDROID_CONTACTS_DB
+            
+            if not os.path.exists(db_path):
+                # Try alternative path
+                db_path = ANDROID_CONTACTS_DB_ALT
+            
+            if not os.path.exists(db_path):
+                logger.debug(f"Contacts database not found at {db_path}")
+                return []
+            
+            logger.debug(f"Querying contacts from {db_path}")
+            
+            # Connect to database
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Query contacts with phone numbers
+            # This queries the phone data from the contacts database
+            query = """
+            SELECT DISTINCT
+                c.display_name AS name,
+                p.data1 AS phone
+            FROM contacts c
+            LEFT JOIN data d ON c._id = d.contact_id
+            LEFT JOIN phone_lookup p ON c._id = p.contact_id
+            WHERE p.data1 IS NOT NULL
+            ORDER BY c.display_name
+            """
+            
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            
+            contacts = []
+            seen = set()  # Avoid duplicates
+            
+            for row in rows:
+                name, phone = row
+                if phone and name:
+                    # Normalize phone number (remove spaces, dashes)
+                    phone_clean = phone.replace(" ", "").replace("-", "")
+                    key = f"{name}:{phone_clean}"
+                    
+                    if key not in seen:
+                        contacts.append({
+                            "name": name,
+                            "phone": phone_clean
+                        })
+                        seen.add(key)
+            
+            conn.close()
+            
+            if contacts:
+                logger.info(f"Found {len(contacts)} contacts in SQLite database")
+            
+            return contacts
+        
+        except sqlite3.OperationalError as e:
+            logger.debug(f"SQLite error (database locked or incorrect schema): {e}")
+            return []
         except Exception as e:
-            logger.error(f"Failed to get contacts: {e}")
+            logger.debug(f"Failed to query SQLite: {e}")
+            return []
+    
+    @staticmethod
+    def _get_contacts_from_dumpsys() -> List[Dict]:
+        """Query contacts using dumpsys command"""
+        try:
+            logger.debug("Attempting to get contacts from dumpsys")
+            
+            # This is a fallback method that may not work in Termux sandbox
+            result = subprocess.run(
+                ["dumpsys", "contacts"],
+                capture_output=True,
+                timeout=5,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.debug(f"dumpsys failed: {result.stderr}")
+                return []
+            
+            # Parse output (simple heuristic)
+            contacts = []
+            lines = result.stdout.split('\n')
+            
+            for line in lines:
+                # Look for lines with phone numbers
+                if '+' in line or line.startswith('0'):
+                    # Extract phone and name from nearby lines
+                    pass  # This is complex, skip for now
+            
+            return contacts
+        
+        except Exception as e:
+            logger.debug(f"dumpsys method failed: {e}")
             return []
     
     @staticmethod
     def _get_contacts_native() -> List[Dict]:
         """
         Get contacts using native Android API (if python-for-android available).
-        This requires: pip install pyjnius
+        This requires Kivy or similar framework.
         """
         try:
-            from jnius import autoclass
+            from jnius import autoclass, cast
+            from android.runnable import run_on_ui_thread
             
-            # Android classes
+            logger.debug("Using native Android API via jnius")
+            
+            # Get Android context
             PythonActivity = autoclass('org.renpy.android.PythonActivity')
             activity = PythonActivity.mActivity
+            Context = autoclass('android.content.Context')
             ContentResolver = autoclass('android.content.ContentResolver')
             ContactsContract = autoclass('android.provider.ContactsContract')
+            Cursor = autoclass('android.database.Cursor')
+            
+            # Get content resolver
+            content_resolver = activity.getContentResolver()
+            
+            # Query contacts
+            uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            projection = ["display_name", "data1"]  # name, phone
+            
+            cursor = content_resolver.query(uri, projection, None, None, None)
             
             contacts = []
-            # Implementation would query ContentResolver
-            # For now, return empty
-            logger.debug("Native API: querying contacts...")
+            while cursor.moveToNext():
+                name = cursor.getString(0)
+                phone = cursor.getString(1)
+                if phone:
+                    contacts.append({
+                        "name": name or "Unknown",
+                        "phone": phone.replace(" ", "").replace("-", "")
+                    })
+            
+            cursor.close()
+            
+            logger.info(f"Native API: retrieved {len(contacts)} contacts")
             return contacts
+        
         except Exception as e:
-            logger.debug(f"Native API failed: {e}")
+            logger.debug(f"Native Android API failed: {e}")
             return []
     
     @staticmethod
-    def _get_contacts_via_cmd() -> List[Dict]:
-        """
-        Get contacts via command-line tools available in Termux.
-        This is a fallback method for development/testing.
-        """
-        # For development, return hardcoded test contacts
-        # In production, would query actual Android contacts
+    def _get_test_contacts() -> List[Dict]:
+        """Return test contacts for development"""
         logger.debug("Using test contacts (development mode)")
-        
         return [
             {"name": "Alice Andersson", "phone": "+46701234567"},
             {"name": "Bob Bergstrom", "phone": "+46702345678"},
@@ -456,6 +588,7 @@ def main():
         # Test contact retrieval
         logger.info("\nTesting contact retrieval...")
         contacts = AndroidContactManager.get_contacts()
+        logger.info(f"Found {len(contacts)} contacts:")
         for contact in contacts:
             logger.info(f"  - {contact['name']}: {contact['phone']}")
         
