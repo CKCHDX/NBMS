@@ -20,6 +20,7 @@ import logging
 import socket
 import threading
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -46,6 +47,8 @@ HOST_PORT = 9999
 LOG_FILE = "control_center.log"
 
 UPDATE_INTERVAL = 1000  # milliseconds
+RECONNECT_INTERVAL = 3000  # milliseconds
+SOCKET_TIMEOUT = 5  # seconds
 
 # ============================================================================
 # Logging Setup
@@ -66,52 +69,141 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class HostConnection:
-    """Manages connection to SBMS Windows Host"""
+    """Manages connection to SBMS Windows Host with robust error handling"""
     
     def __init__(self):
         self.socket = None
         self.connected = False
+        self.lock = threading.Lock()
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
     
     def connect(self) -> bool:
-        """Connect to Windows host"""
-        try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect((HOST_IP, HOST_PORT))
-            self.connected = True
-            logger.info(f"Connected to host {HOST_IP}:{HOST_PORT}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect: {e}")
-            self.connected = False
-            return False
+        """Connect to Windows host with proper socket configuration"""
+        with self.lock:
+            try:
+                if self.socket:
+                    try:
+                        self.socket.close()
+                    except:
+                        pass
+                
+                # Create socket with proper configuration
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                
+                # Enable socket reuse (critical for Windows)
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                
+                # Enable keepalive
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                
+                # Set reasonable timeouts
+                self.socket.settimeout(SOCKET_TIMEOUT)
+                
+                # Connect with explicit error handling
+                self.socket.connect((HOST_IP, HOST_PORT))
+                
+                self.connected = True
+                self.reconnect_attempts = 0
+                logger.info(f"Connected to host {HOST_IP}:{HOST_PORT}")
+                return True
+            
+            except socket.timeout:
+                logger.warning(f"Connection timeout to {HOST_IP}:{HOST_PORT}")
+                self.connected = False
+                self.reconnect_attempts += 1
+                return False
+            
+            except ConnectionRefusedError:
+                logger.warning(f"Connection refused by {HOST_IP}:{HOST_PORT} (is Windows host running?)")
+                self.connected = False
+                self.reconnect_attempts += 1
+                return False
+            
+            except OSError as e:
+                logger.warning(f"OS socket error: {e} (WinError {e.winerror if hasattr(e, 'winerror') else 'N/A'})")
+                self.connected = False
+                self.reconnect_attempts += 1
+                return False
+            
+            except Exception as e:
+                logger.error(f"Failed to connect: {e}")
+                self.connected = False
+                self.reconnect_attempts += 1
+                return False
     
     def send_request(self, request: Dict) -> Optional[Dict]:
-        """Send request to host and receive response"""
-        try:
-            if not self.connected:
-                return None
+        """Send request to host and receive response with error recovery"""
+        with self.lock:
+            try:
+                if not self.connected or not self.socket:
+                    return None
+                
+                # Send request
+                data = json.dumps(request).encode('utf-8')
+                self.socket.sendall(data)
+                
+                # Receive response
+                response_data = b""
+                self.socket.settimeout(SOCKET_TIMEOUT)
+                
+                while True:
+                    chunk = self.socket.recv(4096)
+                    if not chunk:
+                        break
+                    response_data += chunk
+                    # Try to parse what we have so far
+                    try:
+                        return json.loads(response_data.decode('utf-8'))
+                    except json.JSONDecodeError:
+                        # Incomplete JSON, wait for more data
+                        continue
+                
+                if response_data:
+                    return json.loads(response_data.decode('utf-8'))
             
-            data = json.dumps(request).encode('utf-8')
-            self.socket.send(data)
+            except socket.timeout:
+                logger.debug("Socket timeout during communication")
+                self.connected = False
             
-            response_data = self.socket.recv(4096).decode('utf-8')
-            if response_data:
-                return json.loads(response_data)
-        except Exception as e:
-            logger.error(f"Communication error: {e}")
-            self.connected = False
+            except BrokenPipeError:
+                logger.warning("Connection lost (broken pipe)")
+                self.connected = False
+            
+            except ConnectionResetError:
+                logger.warning("Connection reset by host")
+                self.connected = False
+            
+            except OSError as e:
+                if e.winerror == 10038:  # Socket operation on non-socket
+                    logger.warning("Socket closed or invalid (WinError 10038)")
+                elif e.winerror == 10061:  # Connection refused
+                    logger.warning("Connection refused (WinError 10061)")
+                else:
+                    logger.error(f"OS error: {e}")
+                self.connected = False
+            
+            except Exception as e:
+                logger.error(f"Communication error: {e}")
+                self.connected = False
         
         return None
     
     def disconnect(self) -> None:
         """Disconnect from host"""
-        try:
-            if self.socket:
-                self.socket.close()
-            self.connected = False
-            logger.info("Disconnected from host")
-        except Exception as e:
-            logger.error(f"Error disconnecting: {e}")
+        with self.lock:
+            try:
+                if self.socket:
+                    self.socket.close()
+                self.connected = False
+                logger.info("Disconnected from host")
+            except Exception as e:
+                logger.error(f"Error disconnecting: {e}")
+    
+    def is_connected(self) -> bool:
+        """Check if connected"""
+        with self.lock:
+            return self.connected
 
 
 class DataWorker(QObject):
@@ -127,35 +219,46 @@ class DataWorker(QObject):
         super().__init__()
         self.connection = HostConnection()
         self.running = False
+        self.reconnect_timer = 0
     
     def run(self) -> None:
-        """Main update loop"""
+        """Main update loop with connection management"""
         self.running = True
+        update_counter = 0
         
         while self.running:
-            # Ensure connection
-            if not self.connection.connected:
-                self.connection.connect()
-                self.connection_changed.emit(self.connection.connected)
+            # Try to reconnect if not connected
+            if not self.connection.is_connected():
+                self.reconnect_timer += 1
+                
+                if self.reconnect_timer >= (RECONNECT_INTERVAL / 100):
+                    logger.debug(f"Reconnect attempt {self.connection.reconnect_attempts + 1}...")
+                    connected = self.connection.connect()
+                    self.connection_changed.emit(connected)
+                    self.reconnect_timer = 0
             
-            if self.connection.connected:
+            # If connected, fetch data periodically
+            if self.connection.is_connected():
+                update_counter += 1
+                
                 # Fetch status
                 status = self.connection.send_request({"type": "get_status"})
                 if status:
                     self.status_updated.emit(status)
                 
-                # Fetch contacts
-                contacts = self.connection.send_request({"type": "get_contacts"})
-                if contacts:
-                    self.contacts_updated.emit(contacts)
-                
-                # Fetch messages
-                messages = self.connection.send_request({"type": "get_messages"})
-                if messages:
-                    self.messages_updated.emit(messages)
+                # Fetch contacts every 2 updates
+                if update_counter % 2 == 0:
+                    contacts = self.connection.send_request({"type": "get_contacts"})
+                    if contacts:
+                        self.contacts_updated.emit(contacts)
+                    
+                    # Fetch messages every 2 updates
+                    messages = self.connection.send_request({"type": "get_messages"})
+                    if messages:
+                        self.messages_updated.emit(messages)
             
             # Wait before next update
-            threading.Event().wait(UPDATE_INTERVAL / 1000)
+            time.sleep(0.1)  # 100ms loop for responsive UI
     
     def stop(self) -> None:
         """Stop worker thread"""
@@ -175,6 +278,7 @@ class SBMSControlCenter(QMainWindow):
         self.setWindowTitle("SBMS Control Center - Samsung Bluetooth Message Service")
         self.setGeometry(100, 100, 1200, 800)
         
+        # Setup worker and thread
         self.worker = DataWorker()
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
@@ -199,7 +303,8 @@ class SBMSControlCenter(QMainWindow):
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.connection_label = QLabel("Disconnected")
+        self.connection_label = QLabel("● Connecting...")
+        self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
         self.status_bar.addPermanentWidget(self.connection_label)
         
         # Tabs
@@ -236,6 +341,11 @@ class SBMSControlCenter(QMainWindow):
         self.messages_count_label = QLabel("Messages: 0")
         self.messages_count_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         h_layout.addWidget(self.messages_count_label)
+        
+        # Devices count
+        self.devices_count_label = QLabel("Devices: 0")
+        self.devices_count_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        h_layout.addWidget(self.devices_count_label)
         
         # Last update
         self.last_update_label = QLabel("Last update: Never")
@@ -352,10 +462,11 @@ class SBMSControlCenter(QMainWindow):
         """Handle status update from host"""
         self.contacts_count_label.setText(f"Contacts: {status.get('contacts_count', 0)}")
         self.messages_count_label.setText(f"Messages: {status.get('messages_count', 0)}")
+        self.devices_count_label.setText(f"Devices: {status.get('devices_connected', 0)}")
         self.last_update_label.setText(
             f"Last update: {datetime.now().strftime('%H:%M:%S')}"
         )
-        self._log(f"Status updated: {status.get('contacts_count', 0)} contacts, {status.get('messages_count', 0)} messages")
+        self._log(f"Status: {status.get('contacts_count', 0)} contacts, {status.get('messages_count', 0)} messages")
     
     def _on_contacts_updated(self, contacts: Dict) -> None:
         """Handle contacts update from host"""
@@ -396,13 +507,13 @@ class SBMSControlCenter(QMainWindow):
     def _on_connection_changed(self, connected: bool) -> None:
         """Handle connection state change"""
         if connected:
-            self.connection_label.setText("✓ Connected")
+            self.connection_label.setText("● Connected")
             self.connection_label.setStyleSheet("color: green; font-weight: bold;")
-            self._log("Connected to SBMS Windows Host")
+            self._log("✓ Connected to SBMS Windows Host")
         else:
-            self.connection_label.setText("✗ Disconnected")
+            self.connection_label.setText("● Disconnected")
             self.connection_label.setStyleSheet("color: red; font-weight: bold;")
-            self._log("Disconnected from SBMS Windows Host")
+            self._log("✗ Disconnected from SBMS Windows Host")
     
     def _search_contacts(self) -> None:
         """Search contacts"""
