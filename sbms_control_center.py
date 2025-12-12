@@ -31,7 +31,8 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
         QTabWidget, QStatusBar, QMessageBox, QTextEdit, QComboBox,
-        QSpinBox, QDialog, QFormLayout, QHeaderView
+        QSpinBox, QDialog, QFormLayout, QHeaderView, QListWidget,
+        QListWidgetItem, QSplitter, QScrollArea
     )
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QSize
     from PyQt6.QtGui import QColor, QFont, QIcon
@@ -271,52 +272,88 @@ class DataWorker(QObject):
 
 
 # ============================================================================
-# Add Contact Dialog
+# Contact Chat Dialog
 # ============================================================================
 
-class AddContactDialog(QDialog):
-    """Dialog for adding new contacts"""
+class ContactChatDialog(QDialog):
+    """Dialog for chatting with a contact"""
     
-    def __init__(self, parent=None):
+    def __init__(self, contact_name: str, contact_phone: str, connection: HostConnection, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add Contact")
-        self.setGeometry(200, 200, 300, 150)
+        self.contact_name = contact_name
+        self.contact_phone = contact_phone
+        self.connection = connection
         
-        layout = QFormLayout()
+        self.setWindowTitle(f"Chat with {contact_name}")
+        self.setGeometry(200, 200, 500, 400)
         
-        self.name_input = QLineEdit()
-        self.phone_input = QLineEdit()
+        layout = QVBoxLayout()
         
-        self.name_input.setPlaceholderText("Contact name")
-        self.phone_input.setPlaceholderText("Phone number (e.g., +46701234567)")
+        # Header
+        header = QLabel(f"{contact_name} ({contact_phone})")
+        header.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        layout.addWidget(header)
         
-        layout.addRow("Name:", self.name_input)
-        layout.addRow("Phone:", self.phone_input)
+        # Message history (read-only)
+        self.message_history = QTextEdit()
+        self.message_history.setReadOnly(True)
+        layout.addWidget(self.message_history)
         
-        # Buttons
-        button_layout = QHBoxLayout()
+        # Message input
+        input_layout = QVBoxLayout()
         
-        ok_button = QPushButton("Add")
-        ok_button.clicked.connect(self.accept)
-        cancel_button = QPushButton("Cancel")
-        cancel_button.clicked.connect(self.reject)
+        input_label = QLabel("Message:")
+        input_layout.addWidget(input_label)
         
-        button_layout.addWidget(ok_button)
-        button_layout.addWidget(cancel_button)
+        self.message_input = QTextEdit()
+        self.message_input.setMaximumHeight(80)
+        input_layout.addWidget(self.message_input)
         
-        layout.addRow("", button_layout)
+        # Send button
+        send_button = QPushButton("Send")
+        send_button.clicked.connect(self._send_message)
+        input_layout.addWidget(send_button)
+        
+        layout.addLayout(input_layout)
         
         self.setLayout(layout)
+        self._update_history()
     
-    def get_contact(self):
-        """Get entered contact"""
-        name = self.name_input.text().strip()
-        phone = self.phone_input.text().strip()
+    def _update_history(self) -> None:
+        """Update message history (would load from database)"""
+        self.message_history.append(f"Chat with {self.contact_name}")
+        self.message_history.append(f"Phone: {self.contact_phone}")
+        self.message_history.append("-" * 40)
+        self.message_history.append("[Start of conversation]")
+    
+    def _send_message(self) -> None:
+        """Send message to contact"""
+        text = self.message_input.toPlainText().strip()
         
-        if not name or not phone:
-            return None
+        if not text:
+            QMessageBox.warning(self, "Error", "Message cannot be empty")
+            return
         
-        return {"name": name, "phone": phone}
+        # Generate message ID
+        msg_id = f"msg_{int(time.time() * 1000)}"
+        
+        # Send to Windows host
+        request = {
+            "type": "send_message",
+            "id": msg_id,
+            "to": self.contact_phone,
+            "text": text
+        }
+        
+        response = self.connection.send_request(request)
+        
+        if response and response.get('status') == 'queued':
+            # Add to history
+            self.message_history.append(f"\n[{datetime.now().strftime('%H:%M:%S')}] You: {text}")
+            self.message_input.clear()
+            QMessageBox.information(self, "Success", "Message sent!")
+        else:
+            QMessageBox.warning(self, "Error", "Failed to send message")
 
 
 # ============================================================================
@@ -422,20 +459,6 @@ class SBMSControlCenter(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        # Button bar
-        button_layout = QHBoxLayout()
-        
-        add_button = QPushButton("Add Contact")
-        add_button.clicked.connect(self._add_contact)
-        button_layout.addWidget(add_button)
-        
-        delete_button = QPushButton("Delete Contact")
-        delete_button.clicked.connect(self._delete_contact)
-        button_layout.addWidget(delete_button)
-        
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
-        
         # Search
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search:"))
@@ -445,12 +468,18 @@ class SBMSControlCenter(QMainWindow):
         search_layout.addWidget(self.search_input)
         layout.addLayout(search_layout)
         
-        # Contacts table
+        # Contacts table (clickable)
         self.contacts_table = QTableWidget()
         self.contacts_table.setColumnCount(4)
         self.contacts_table.setHorizontalHeaderLabels(["Name", "Phone", "Added", "Last Contact"])
         self.contacts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.contacts_table.itemDoubleClicked.connect(self._on_contact_double_clicked)
         layout.addWidget(self.contacts_table)
+        
+        # Info label
+        info = QLabel("(Double-click a contact to open chat)")
+        info.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(info)
         
         return widget
     
@@ -460,14 +489,14 @@ class SBMSControlCenter(QMainWindow):
         layout = QVBoxLayout(widget)
         
         # Message compose
-        compose_label = QLabel("New Message:")
+        compose_label = QLabel("Send New Message:")
         compose_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         layout.addWidget(compose_label)
         
         compose_layout = QFormLayout()
         
         self.recipient_input = QLineEdit()
-        self.recipient_input.setPlaceholderText("Enter recipient phone number or name")
+        self.recipient_input.setPlaceholderText("Enter recipient phone number (e.g., +46701234567)")
         compose_layout.addRow("To:", self.recipient_input)
         
         self.message_input = QTextEdit()
@@ -595,39 +624,15 @@ class SBMSControlCenter(QMainWindow):
             else:
                 self.contacts_table.hideRow(row)
     
-    def _add_contact(self) -> None:
-        """Add new contact"""
-        dialog = AddContactDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            contact = dialog.get_contact()
-            if contact:
-                # Send to host
-                contacts = [{contact}]
-                request = {"type": "sync_contacts", "contacts": [contact]}
-                response = self.worker.connection.send_request(request)
-                if response and response.get('status') == 'synced':
-                    self._log(f"[OK] Contact added: {contact['name']}")
-                    QMessageBox.information(self, "Success", f"Contact {contact['name']} added successfully")
-                else:
-                    QMessageBox.warning(self, "Error", "Failed to add contact")
-    
-    def _delete_contact(self) -> None:
-        """Delete selected contact"""
-        current_row = self.contacts_table.currentRow()
-        if current_row >= 0:
-            phone = self.contacts_table.item(current_row, 1).text()
-            name = self.contacts_table.item(current_row, 0).text()
-            
-            reply = QMessageBox.question(
-                self, "Confirm", f"Delete contact {name} ({phone})?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            
-            if reply == QMessageBox.StandardButton.Yes:
-                self._log(f"Deleted contact: {name} ({phone})")
-                QMessageBox.information(self, "Success", "Contact deleted")
-        else:
-            QMessageBox.warning(self, "Error", "Select a contact to delete")
+    def _on_contact_double_clicked(self, item) -> None:
+        """Open chat when contact is double-clicked"""
+        row = item.row()
+        name = self.contacts_table.item(row, 0).text()
+        phone = self.contacts_table.item(row, 1).text()
+        
+        # Open chat dialog
+        dialog = ContactChatDialog(name, phone, self.worker.connection, self)
+        dialog.exec()
     
     def _send_message(self) -> None:
         """Send new message to host"""
