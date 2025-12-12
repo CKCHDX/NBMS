@@ -1,11 +1,1 @@
-# Windows Host & Control Center
-pybluez==0.23
 PyQt6==6.6.1
-PyQt6-Qt6==6.6.1
-PyQt6-sip==13.6.0
-
-# Z Fold 6 Client (Termux)
-requests==2.31.0
-
-# Utilities
-python-dotenv==1.0.0
