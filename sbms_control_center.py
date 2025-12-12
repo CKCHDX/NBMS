@@ -58,8 +58,8 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -303,7 +303,7 @@ class SBMSControlCenter(QMainWindow):
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.connection_label = QLabel("● Connecting...")
+        self.connection_label = QLabel("* Connecting...")
         self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
         self.status_bar.addPermanentWidget(self.connection_label)
         
@@ -507,13 +507,13 @@ class SBMSControlCenter(QMainWindow):
     def _on_connection_changed(self, connected: bool) -> None:
         """Handle connection state change"""
         if connected:
-            self.connection_label.setText("● Connected")
+            self.connection_label.setText("[OK] Connected")
             self.connection_label.setStyleSheet("color: green; font-weight: bold;")
-            self._log("✓ Connected to SBMS Windows Host")
+            self._log("[OK] Connected to SBMS Windows Host")
         else:
-            self.connection_label.setText("● Disconnected")
+            self.connection_label.setText("[X] Disconnected")
             self.connection_label.setStyleSheet("color: red; font-weight: bold;")
-            self._log("✗ Disconnected from SBMS Windows Host")
+            self._log("[X] Disconnected from SBMS Windows Host")
     
     def _search_contacts(self) -> None:
         """Search contacts"""
