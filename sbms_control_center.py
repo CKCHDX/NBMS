@@ -21,6 +21,7 @@ import socket
 import threading
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -30,9 +31,9 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
         QTabWidget, QStatusBar, QMessageBox, QTextEdit, QComboBox,
-        QSpinBox, QDialog, QFormLayout
+        QSpinBox, QDialog, QFormLayout, QHeaderView
     )
-    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread
+    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QSize
     from PyQt6.QtGui import QColor, QFont, QIcon
 except ImportError:
     print("ERROR: PyQt6 not installed. Install with: pip install PyQt6")
@@ -175,10 +176,13 @@ class HostConnection:
                 self.connected = False
             
             except OSError as e:
-                if e.winerror == 10038:  # Socket operation on non-socket
-                    logger.warning("Socket closed or invalid (WinError 10038)")
-                elif e.winerror == 10061:  # Connection refused
-                    logger.warning("Connection refused (WinError 10061)")
+                if hasattr(e, 'winerror'):
+                    if e.winerror == 10038:  # Socket operation on non-socket
+                        logger.warning("Socket closed or invalid (WinError 10038)")
+                    elif e.winerror == 10061:  # Connection refused
+                        logger.warning("Connection refused (WinError 10061)")
+                    else:
+                        logger.error(f"OS error: {e}")
                 else:
                     logger.error(f"OS error: {e}")
                 self.connected = False
@@ -267,6 +271,55 @@ class DataWorker(QObject):
 
 
 # ============================================================================
+# Add Contact Dialog
+# ============================================================================
+
+class AddContactDialog(QDialog):
+    """Dialog for adding new contacts"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Contact")
+        self.setGeometry(200, 200, 300, 150)
+        
+        layout = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.phone_input = QLineEdit()
+        
+        self.name_input.setPlaceholderText("Contact name")
+        self.phone_input.setPlaceholderText("Phone number (e.g., +46701234567)")
+        
+        layout.addRow("Name:", self.name_input)
+        layout.addRow("Phone:", self.phone_input)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        ok_button = QPushButton("Add")
+        ok_button.clicked.connect(self.accept)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addRow("", button_layout)
+        
+        self.setLayout(layout)
+    
+    def get_contact(self):
+        """Get entered contact"""
+        name = self.name_input.text().strip()
+        phone = self.phone_input.text().strip()
+        
+        if not name or not phone:
+            return None
+        
+        return {"name": name, "phone": phone}
+
+
+# ============================================================================
 # Main UI
 # ============================================================================
 
@@ -276,7 +329,7 @@ class SBMSControlCenter(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SBMS Control Center - Samsung Bluetooth Message Service")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1400, 900)
         
         # Setup worker and thread
         self.worker = DataWorker()
@@ -369,21 +422,34 @@ class SBMSControlCenter(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
+        # Button bar
+        button_layout = QHBoxLayout()
+        
+        add_button = QPushButton("Add Contact")
+        add_button.clicked.connect(self._add_contact)
+        button_layout.addWidget(add_button)
+        
+        delete_button = QPushButton("Delete Contact")
+        delete_button.clicked.connect(self._delete_contact)
+        button_layout.addWidget(delete_button)
+        
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
         # Search
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search:"))
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter name or phone...")
+        self.search_input.textChanged.connect(self._search_contacts)
         search_layout.addWidget(self.search_input)
-        search_button = QPushButton("Search")
-        search_button.clicked.connect(self._search_contacts)
-        search_layout.addWidget(search_button)
         layout.addLayout(search_layout)
         
         # Contacts table
         self.contacts_table = QTableWidget()
         self.contacts_table.setColumnCount(4)
         self.contacts_table.setHorizontalHeaderLabels(["Name", "Phone", "Added", "Last Contact"])
+        self.contacts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.contacts_table)
         
         return widget
@@ -401,7 +467,7 @@ class SBMSControlCenter(QMainWindow):
         compose_layout = QFormLayout()
         
         self.recipient_input = QLineEdit()
-        self.recipient_input.setPlaceholderText("Enter recipient phone number")
+        self.recipient_input.setPlaceholderText("Enter recipient phone number or name")
         compose_layout.addRow("To:", self.recipient_input)
         
         self.message_input = QTextEdit()
@@ -425,6 +491,7 @@ class SBMSControlCenter(QMainWindow):
         self.messages_table.setHorizontalHeaderLabels(
             ["ID", "To", "Text", "Status", "Time", "Retries"]
         )
+        self.messages_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.messages_table)
         
         return widget
@@ -487,9 +554,9 @@ class SBMSControlCenter(QMainWindow):
         self.messages_table.setRowCount(len(data))
         
         for row, (msg_id, msg_info) in enumerate(data.items()):
-            self.messages_table.setItem(row, 0, QTableWidgetItem(msg_id))
+            self.messages_table.setItem(row, 0, QTableWidgetItem(msg_id[:20]))  # Truncate ID
             self.messages_table.setItem(row, 1, QTableWidgetItem(msg_info.get('to_number', '')))
-            self.messages_table.setItem(row, 2, QTableWidgetItem(msg_info.get('text', '')[:30]))
+            self.messages_table.setItem(row, 2, QTableWidgetItem(msg_info.get('text', '')[:50]))
             
             status = msg_info.get('status', 'unknown')
             status_item = QTableWidgetItem(status)
@@ -528,8 +595,42 @@ class SBMSControlCenter(QMainWindow):
             else:
                 self.contacts_table.hideRow(row)
     
+    def _add_contact(self) -> None:
+        """Add new contact"""
+        dialog = AddContactDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            contact = dialog.get_contact()
+            if contact:
+                # Send to host
+                contacts = [{contact}]
+                request = {"type": "sync_contacts", "contacts": [contact]}
+                response = self.worker.connection.send_request(request)
+                if response and response.get('status') == 'synced':
+                    self._log(f"[OK] Contact added: {contact['name']}")
+                    QMessageBox.information(self, "Success", f"Contact {contact['name']} added successfully")
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to add contact")
+    
+    def _delete_contact(self) -> None:
+        """Delete selected contact"""
+        current_row = self.contacts_table.currentRow()
+        if current_row >= 0:
+            phone = self.contacts_table.item(current_row, 1).text()
+            name = self.contacts_table.item(current_row, 0).text()
+            
+            reply = QMessageBox.question(
+                self, "Confirm", f"Delete contact {name} ({phone})?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self._log(f"Deleted contact: {name} ({phone})")
+                QMessageBox.information(self, "Success", "Contact deleted")
+        else:
+            QMessageBox.warning(self, "Error", "Select a contact to delete")
+    
     def _send_message(self) -> None:
-        """Send new message"""
+        """Send new message to host"""
         to = self.recipient_input.text().strip()
         text = self.message_input.toPlainText().strip()
         
@@ -537,12 +638,28 @@ class SBMSControlCenter(QMainWindow):
             QMessageBox.warning(self, "Error", "Please enter recipient and message text")
             return
         
-        # TODO: Send to Windows host
-        QMessageBox.information(self, "Success", f"Message queued to {to}")
-        self._log(f"Message sent to {to}: {text[:30]}...")
+        # Generate message ID
+        msg_id = f"msg_{int(time.time() * 1000)}"
         
-        self.recipient_input.clear()
-        self.message_input.clear()
+        # Send to host
+        request = {
+            "type": "send_message",
+            "id": msg_id,
+            "to": to,
+            "text": text
+        }
+        
+        response = self.worker.connection.send_request(request)
+        
+        if response and response.get('status') == 'queued':
+            self._log(f"[OK] Message queued to {to}: {text[:30]}...")
+            QMessageBox.information(self, "Success", f"Message queued to {to}")
+            
+            self.recipient_input.clear()
+            self.message_input.clear()
+        else:
+            self._log(f"[ERROR] Failed to queue message to {to}")
+            QMessageBox.warning(self, "Error", "Failed to send message")
     
     def _log(self, message: str) -> None:
         """Add message to system log"""
