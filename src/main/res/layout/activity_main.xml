@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    tools:context="com.oscyra.sbms.MainActivity">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingBottom="16dp"
+        android:background="@drawable/header_background"
+        android:paddingTop="8dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Samsung Bluetooth Message Service"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/white" />
+
+        <TextView
+            android:id="@+id/device_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Bluetooth: Off"
+            android:textSize="14sp"
+            android:textColor="@android:color/white"
+            android:layout_marginTop="4dp" />
+    </LinearLayout>
+
+    <!-- Connect Button -->
+    <Button
+        android:id="@+id/connect_button"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:text="Connect to E1310E"
+        android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Selected Contact Display -->
+    <TextView
+        android:id="@+id/selected_contact_display"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:padding="8dp"
+        android:layout_marginBottom="8dp"
+        android:background="@drawable/selected_contact_background" />
+
+    <!-- Contact Search -->
+    <EditText
+        android:id="@+id/contact_search"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:hint="Search contacts..."
+        android:padding="12dp"
+        android:layout_marginBottom="8dp"
+        android:background="@drawable/search_background"
+        android:inputType="text" />
+
+    <!-- Contacts List -->
+    <ListView
+        android:id="@+id/contacts_list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Message Input Section -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingTop="8dp"
+        android:borderBottom="1dp"
+        android:borderLeft="1dp"
+        android:borderRight="1dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:justifyContent="space_between"
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Message (SMS)"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/message_counter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0/160 chars"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary" />
+        </LinearLayout>
+
+        <EditText
+            android:id="@+id/message_input"
+            android:layout_width="match_parent"
+            android:layout_height="96dp"
+            android:hint="Type your message..."
+            android:padding="12dp"
+            android:gravity="top"
+            android:inputType="text|textMultiLine"
+            android:background="@drawable/message_input_background"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/send_button"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Send Message"
+            android:textSize="16sp"
+            android:enabled="false" />
+    </LinearLayout>
+</LinearLayout>

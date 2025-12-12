@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Samsung Bluetooth Message Service</string>
+    <string name="connect_button">Connect to E1310E</string>
+    <string name="send_button">Send Message</string>
+    <string name="search_hint">Search contacts...</string>
+    <string name="message_hint">Type your message...</string>
+    <string name="bluetooth_off">Bluetooth: Off</string>
+    <string name="bluetooth_connecting">Connecting...</string>
+    <string name="bluetooth_connected">Connected to E1310E</string>
+    <string name="error_no_contact">Please select a contact</string>
+    <string name="error_empty_message">Message cannot be empty</string>
+    <string name="error_message_too_long">Message exceeds 160 characters</string>
+    <string name="message_sent">Message sent</string>
+    <string name="sending_message">Sending...</string>
+</resources>
