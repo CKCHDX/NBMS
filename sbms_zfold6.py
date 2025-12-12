@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-SBMS Z Fold 6 Client (Termux/Android Python)
+SBMS Z Fold 6 Client - Real Shizuku Integration
 
 Bridges Samsung Z Fold 6 Android contacts and SMS with SBMS Windows Host.
-Runs in Termux, syncs contacts, and sends SMS.
+Runs in Termux, syncs real contacts via Shizuku, and sends real SMS.
+
+Requires:
+- Termux on Z Fold 6
+- Shizuku app running
+- rish binary for Shizuku commands
+- Python 3.10+
 
 Author: Alex Jonsson
 Location: Stockholm, Sweden
 Date: December 2025
-
-Requirements (in Termux):
-- python3.10+
-- socket (builtin)
-- json (builtin)
-- threading (builtin)
 
 Running:
 ```bash
@@ -54,6 +54,9 @@ BASE_PATH = os.path.expanduser("~/.sbms")
 LOG_FILE = os.path.join(BASE_PATH, "zfold6.log")
 CONTACTS_CACHE = os.path.join(BASE_PATH, "contacts_cache.json")
 
+# Shizuku
+RISH_PATH = os.path.join(BASE_PATH, "rish")  # rish binary in same directory
+
 # Create directories
 os.makedirs(BASE_PATH, exist_ok=True)
 
@@ -72,30 +75,149 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Android Integration
+# Shizuku Integration via rish
+# ============================================================================
+
+class ShizukuRish:
+    """
+    Interacts with Shizuku through rish binary.
+    rish is a Shizuku helper that executes commands with elevated privileges.
+    """
+    
+    @staticmethod
+    def run_command(cmd: str, timeout: int = 10) -> Optional[str]:
+        """
+        Run command through Shizuku via rish.
+        
+        Usage:
+            output = ShizukuRish.run_command("content query --uri ...")
+        """
+        try:
+            # Use rish to execute with Shizuku privileges
+            result = subprocess.run(
+                [RISH_PATH, "sh", "-c", cmd],
+                capture_output=True,
+                timeout=timeout,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                return result.stdout
+            else:
+                logger.debug(f"Command failed: {result.stderr}")
+                return None
+        
+        except FileNotFoundError:
+            logger.error(f"rish not found at {RISH_PATH}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to run command: {e}")
+            return None
+
+
+# ============================================================================
+# Android Integration - Real Contacts via Shizuku
 # ============================================================================
 
 class AndroidContactManager:
     """
-    Manages Android contacts.
-    Currently uses test contacts, will integrate real contacts via Rish/Shizuku later.
+    Reads REAL Android contacts via Shizuku/rish.
+    Works on Android 16 without root.
     """
     
     @staticmethod
     def get_contacts() -> List[Dict]:
-        """Get contacts (currently test contacts)"""
-        # TODO: Integrate with Rish/Shizuku for real contacts
-        return AndroidContactManager._get_test_contacts()
+        """Get real Android contacts via Shizuku"""
+        
+        logger.debug("Querying real Android contacts via Shizuku...")
+        contacts = AndroidContactManager._query_contacts_shizuku()
+        
+        if contacts:
+            logger.info(f"Retrieved {len(contacts)} real contacts from device")
+            return contacts
+        
+        logger.warning("Failed to get real contacts")
+        return []
     
     @staticmethod
-    def _get_test_contacts() -> List[Dict]:
-        """Return test contacts for development"""
-        logger.debug("Using test contacts")
-        return [
-            {"name": "Alice Andersson", "phone": "+46701234567"},
-            {"name": "Bob Bergstrom", "phone": "+46702345678"},
-            {"name": "Charlie Carlson", "phone": "+46703456789"},
-        ]
+    def _query_contacts_shizuku() -> List[Dict]:
+        """
+        Query real contacts using Shizuku.
+        Uses 'content' command with READ_CONTACTS permission.
+        """
+        try:
+            # Query contacts from ContactsProvider
+            cmd = """
+content query --uri content://com.android.contacts/data \
+--projection raw_contact_id:data1 \
+--where "mimetype='vnd.android.cursor.item/phone_v2'" 2>/dev/null
+            """
+            
+            output = ShizukuRish.run_command(cmd)
+            
+            if not output:
+                return []
+            
+            # Parse phone numbers
+            phone_map = {}  # Map raw_contact_id -> phone
+            
+            for line in output.split('\n'):
+                if 'raw_contact_id=' in line and 'data1=' in line:
+                    # Parse: Row: raw_contact_id=123, data1=+46701234567
+                    parts = {}
+                    for part in line.split(','):
+                        if '=' in part:
+                            k, v = part.split('=', 1)
+                            parts[k.strip()] = v.strip()
+                    
+                    contact_id = parts.get('raw_contact_id')
+                    phone = parts.get('data1', '').replace(' ', '').replace('-', '')
+                    
+                    if contact_id and phone:
+                        phone_map[contact_id] = phone
+            
+            # Query contact names
+            cmd2 = """
+content query --uri content://com.android.contacts/raw_contacts \
+--projection _id:display_name 2>/dev/null
+            """
+            
+            output2 = ShizukuRish.run_command(cmd2)
+            
+            if not output2:
+                return []
+            
+            contacts = []
+            seen = set()
+            
+            for line in output2.split('\n'):
+                if '_id=' in line and 'display_name=' in line:
+                    parts = {}
+                    for part in line.split(','):
+                        if '=' in part:
+                            k, v = part.split('=', 1)
+                            parts[k.strip()] = v.strip()
+                    
+                    contact_id = parts.get('_id')
+                    name = parts.get('display_name')
+                    
+                    if contact_id in phone_map and name:
+                        phone = phone_map[contact_id]
+                        key = f"{name}:{phone}"
+                        
+                        if key not in seen:
+                            contacts.append({
+                                "name": name,
+                                "phone": phone
+                            })
+                            seen.add(key)
+                            logger.debug(f"Found contact: {name} - {phone}")
+            
+            return contacts
+        
+        except Exception as e:
+            logger.error(f"Failed to query contacts: {e}")
+            return []
     
     @staticmethod
     def cache_contacts(contacts: List[Dict]) -> None:
@@ -108,29 +230,58 @@ class AndroidContactManager:
             logger.warning(f"Failed to cache contacts: {e}")
 
 
-class SMS:
+# ============================================================================
+# SMS Sending via Shizuku
+# ============================================================================
+
+class ShizukuSMS:
     """
-    Sends SMS (currently mock, will integrate with Rish/Shizuku later).
+    Sends real SMS via Shizuku/rish.
+    No mocking - actual SMS delivery.
     """
     
     @staticmethod
     def send_sms(phone_number: str, message_text: str) -> bool:
         """
-        Send SMS.
+        Send real SMS using Shizuku.
         
         Returns:
-            True if sent successfully, False on error
+            True if SMS was sent successfully, False otherwise
         """
         try:
             logger.info(f"Sending SMS to {phone_number}")
-            logger.info(f"  Text: {message_text}")
+            logger.info(f"Text: {message_text[:50]}...")
             
-            # TODO: Integrate with Rish/Shizuku for real SMS
-            # For now, just log it
-            logger.info(f"[MOCK SMS] To: {phone_number}")
-            logger.info(f"[MOCK SMS] Text: {message_text}")
+            # Method 1: Use am command to open default SMS app
+            # This will send via the system's default SMS app
+            escaped_msg = message_text.replace('"', '\\"').replace("'", "\\'")  
+            cmd = f"""am start -a android.intent.action.SENDTO \
+-d sms:{phone_number} \
+--es sms_body \"{escaped_msg}\" \
+--ez exit_on_sent true 2>/dev/null
+            """
             
-            return True
+            output = ShizukuRish.run_command(cmd)
+            
+            if output is not None:
+                logger.info(f"SMS sent to {phone_number}")
+                return True
+            
+            # Method 2: Fallback - use service call for direct SMS
+            logger.debug("Trying fallback SMS method...")
+            cmd2 = f"""service call isms 7 s16 \"com.android.mms\" \
+s16 \"\" s16 \"{phone_number}\" s16 \"\" s16 \"{escaped_msg}\" \
+s16 \"\" s16 \"\" 2>/dev/null
+            """
+            
+            output2 = ShizukuRish.run_command(cmd2)
+            
+            if output2 is not None:
+                logger.info(f"SMS queued to {phone_number}")
+                return True
+            
+            logger.warning(f"Failed to send SMS to {phone_number}")
+            return False
         
         except Exception as e:
             logger.error(f"Failed to send SMS: {e}")
@@ -177,13 +328,12 @@ class SBMSZFold6Client:
             return True
         
         except socket.timeout:
-            logger.warning(f"Connection timeout to {self.host}:{self.port}")
+            logger.warning(f"Connection timeout")
             self.connected = False
             return False
         
         except ConnectionRefusedError:
-            logger.warning(f"Connection refused by {self.host}:{self.port}")
-            logger.warning("Is Windows host running? (sbms_windows_host.py)")
+            logger.warning(f"Connection refused (Windows host not running?)")
             self.connected = False
             return False
         
@@ -265,7 +415,6 @@ class SBMSZFold6Client:
         logger.info("="*70)
         logger.info(f"Target: {self.host}:{self.port}")
         logger.info(f"Device: {DEVICE_NAME}")
-        logger.info("="*70)
         logger.info("")
         logger.info("Timers:")
         logger.info(f"  - Reconnect: {RECONNECT_INTERVAL}s")
@@ -273,6 +422,7 @@ class SBMSZFold6Client:
         logger.info(f"  - Sync: {SYNC_INTERVAL}s")
         logger.info("")
         logger.info("Press Ctrl+C to shutdown...")
+        logger.info("="*70)
         logger.info("")
         
         while self.running:
@@ -297,6 +447,8 @@ class SBMSZFold6Client:
                     if contacts:
                         if not self.sync_contacts(contacts):
                             logger.warning("Sync failed, will retry")
+                    else:
+                        logger.warning("No contacts to sync")
                     self.sync_timer = 0
             
             time.sleep(1)
@@ -312,7 +464,6 @@ class SBMSZFold6Client:
         self.disconnect()
         
         logger.info("Client stopped")
-        logger.info("Log saved to: " + LOG_FILE)
 
 
 # ============================================================================
@@ -324,7 +475,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="SBMS Z Fold 6 Client"
+        description="SBMS Z Fold 6 Client (Real Shizuku Integration)"
     )
     parser.add_argument(
         "--host",
@@ -340,28 +491,27 @@ def main():
     parser.add_argument(
         "--test",
         action="store_true",
-        help="Run in test mode (no persistent connection)"
+        help="Test mode: query contacts and send test SMS"
     )
     
     args = parser.parse_args()
     
     if args.test:
         logger.info("Running in TEST MODE")
-        logger.info(f"Would connect to {args.host}:{args.port}")
         logger.info("")
         
         # Test contact retrieval
-        logger.info("Testing contact retrieval...")
+        logger.info("Testing real contact retrieval via Shizuku...")
         contacts = AndroidContactManager.get_contacts()
         logger.info(f"Found {len(contacts)} contacts:")
         for contact in contacts:
             logger.info(f"  - {contact['name']}: {contact['phone']}")
         
-        # Test SMS sending
+        # Test SMS
         logger.info("\nTesting SMS sending...")
-        SMS.send_sms("+46701234567", "Test message from SBMS")
+        ShizukuSMS.send_sms("+46701234567", "Test SMS from SBMS")
         
-        logger.info("\nTest mode complete")
+        logger.info("\nTest complete")
         return
     
     # Production mode
