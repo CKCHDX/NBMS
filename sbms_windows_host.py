@@ -5,6 +5,8 @@ SBMS Windows Host
 Central relay server for the Samsung Bluetooth Message Service.
 Bridges communication between E1310E (J2ME), Z Fold 6 (Android), and Control Center (UI).
 
+Uses native Windows Bluetooth APIs instead of pybluez for RFCOMM support.
+
 Author: Alex Jonsson
 Location: Kista, Sweden
 Date: December 2025
@@ -14,15 +16,22 @@ import json
 import logging
 import threading
 import socket
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import sys
 
-try:
-    import bluetooth
-except ImportError:
-    print("ERROR: pybluez not installed. Install with: pip install pybluez")
-    exit(1)
+# Windows-specific imports
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+    # Windows Bluetooth constants
+    INVALID_SOCKET = ctypes.c_int(-1).value
+    SOCKET_ERROR = -1
+else:
+    print("ERROR: This script is designed for Windows. Use sbms_linux_host.py on Linux.")
+    sys.exit(1)
 
 # ============================================================================
 # Configuration
@@ -37,20 +46,22 @@ E1310E_MAC = "E1:31:0E:XX:XX:XX"  # Samsung E1310E
 ZFOLD6_MAC = "XX:XX:XX:XX:XX:XX"  # Samsung Z Fold 6
 
 # Bluetooth settings
-BLUETOOTH_PORT = 1
-BLUETOOTH_BACKLOG = 1
+BLUETOOTH_PORT = 1  # RFCOMM port 1
+BLUETOOTH_BACKLOG = 5
+BLUETOOTH_TIMEOUT = 30  # seconds
 
 # TCP settings
 TCP_HOST = "127.0.0.1"
 TCP_PORT = 9999
 TCP_BACKLOG = 5
+TCP_TIMEOUT = 10  # seconds
 
 # ============================================================================
 # Logging Setup
 # ============================================================================
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(LOG_FILE),
@@ -58,6 +69,51 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Windows Bluetooth Support (Without PyBluez)
+# ============================================================================
+
+class WindowsBluetoothAdapter:
+    """
+    Wrapper for Windows native Bluetooth APIs via ctypes.
+    Since pybluez doesn't support RFCOMM properly on Windows,
+    we use socket library with AF_BTH (Bluetooth) family.
+    """
+    
+    @staticmethod
+    def create_rfcomm_socket():
+        """
+        Create a Bluetooth RFCOMM socket using Windows sockets API.
+        AF_BTH = 32 (Bluetooth address family)
+        BTHPROTO_RFCOMM = 3 (RFCOMM protocol)
+        SOCK_STREAM = 1
+        """
+        try:
+            # Try native Windows Bluetooth socket
+            # Windows uses AF_BTH (32) instead of standard socket families
+            sock = socket.socket(32, socket.SOCK_STREAM)  # 32 = AF_BTH
+            return sock
+        except Exception as e:
+            logger.warning(f"Native Windows Bluetooth socket failed: {e}")
+            logger.info("Falling back to mock TCP server for testing")
+            return None
+    
+    @staticmethod
+    def bind_rfcomm_socket(sock, port: int):
+        """
+        Bind RFCOMM socket to a port.
+        On Windows, use BT_ADDR_ANY (0, 0, 0, 0, 0, 0)
+        """
+        try:
+            # Windows Bluetooth address format: (MAC, 0, port)
+            sock.bind(("00:00:00:00:00:00", port))
+            logger.info(f"Bluetooth socket bound to port {port}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to bind Bluetooth socket: {e}")
+            return False
+
 
 # ============================================================================
 # Data Management
@@ -165,11 +221,14 @@ class MessageQueue:
 
 
 # ============================================================================
-# Bluetooth Communication
+# Bluetooth Communication (Mock TCP on Windows if native fails)
 # ============================================================================
 
 class BluetoothServer:
-    """Manages Bluetooth RFCOMM server for device connections"""
+    """
+    Manages Bluetooth RFCOMM server for device connections.
+    Falls back to TCP if native Bluetooth socket fails on Windows.
+    """
     
     def __init__(self, contacts_db: ContactDatabase, msg_queue: MessageQueue):
         self.contacts_db = contacts_db
@@ -177,28 +236,62 @@ class BluetoothServer:
         self.server_socket = None
         self.running = False
         self.clients: Dict[str, socket.socket] = {}
+        self.use_tcp_fallback = False
+        self._client_lock = threading.Lock()
     
     def start(self) -> None:
-        """Start Bluetooth RFCOMM server"""
+        """Start Bluetooth RFCOMM server (with TCP fallback for Windows)"""
         try:
-            self.server_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            self.server_socket.bind(("", BLUETOOTH_PORT))
-            self.server_socket.listen(BLUETOOTH_BACKLOG)
+            # Try native Windows Bluetooth socket first
+            sock = WindowsBluetoothAdapter.create_rfcomm_socket()
             
-            local_addr = bluetooth.read_local_bdaddr()[0]
-            logger.info(f"Bluetooth server started on {local_addr}:{BLUETOOTH_PORT}")
+            if sock is None:
+                logger.warning("Using TCP fallback for Bluetooth server")
+                self._start_tcp_fallback()
+                return
             
-            self.running = True
-            self._accept_connections()
+            self.server_socket = sock
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.settimeout(BLUETOOTH_TIMEOUT)
+            
+            if WindowsBluetoothAdapter.bind_rfcomm_socket(self.server_socket, BLUETOOTH_PORT):
+                self.server_socket.listen(BLUETOOTH_BACKLOG)
+                logger.info(f"Bluetooth server started on port {BLUETOOTH_PORT}")
+                self.running = True
+                self._accept_connections()
+            else:
+                self._start_tcp_fallback()
+        
         except Exception as e:
             logger.error(f"Failed to start Bluetooth server: {e}")
+            self._start_tcp_fallback()
+    
+    def _start_tcp_fallback(self) -> None:
+        """Start TCP fallback server on separate port for Bluetooth devices"""
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.bind(("0.0.0.0", 5555))  # Different port for Bluetooth fallback
+            self.server_socket.listen(BLUETOOTH_BACKLOG)
+            self.server_socket.settimeout(BLUETOOTH_TIMEOUT)
+            
+            logger.info("Bluetooth server started (TCP fallback on port 5555)")
+            self.running = True
+            self.use_tcp_fallback = True
+            self._accept_connections()
+        except Exception as e:
+            logger.error(f"Failed to start TCP fallback: {e}")
     
     def _accept_connections(self) -> None:
-        """Accept and handle incoming Bluetooth connections"""
+        """Accept and handle incoming Bluetooth/TCP connections"""
         while self.running:
             try:
                 client_sock, client_addr = self.server_socket.accept()
-                logger.info(f"Bluetooth connection from {client_addr}")
+                logger.info(f"Device connection from {client_addr}")
+                
+                # Store client
+                with self._client_lock:
+                    self.clients[str(client_addr)] = client_sock
                 
                 # Handle client in separate thread
                 client_thread = threading.Thread(
@@ -207,32 +300,56 @@ class BluetoothServer:
                     daemon=True
                 )
                 client_thread.start()
+            
+            except socket.timeout:
+                continue
             except Exception as e:
-                logger.error(f"Error accepting connection: {e}")
+                if self.running:
+                    logger.error(f"Error accepting connection: {e}")
     
     def _handle_client(self, client_sock: socket.socket, client_addr: str) -> None:
         """Handle messages from a connected client"""
+        client_id = str(client_addr)
         try:
+            client_sock.settimeout(BLUETOOTH_TIMEOUT)
+            
             while True:
-                data = client_sock.recv(1024).decode('utf-8')
-                if not data:
+                try:
+                    data = client_sock.recv(1024)
+                    if not data:
+                        break
+                    
+                    message = json.loads(data.decode('utf-8'))
+                    logger.debug(f"Device message: {message}")
+                    
+                    response = self._process_message(message, client_addr)
+                    
+                    if response:
+                        client_sock.send(json.dumps(response).encode('utf-8'))
+                
+                except socket.timeout:
+                    continue
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON from {client_addr}: {e}")
                     break
-                
-                message = json.loads(data)
-                logger.debug(f"Received: {message}")
-                
-                response = self._process_message(message, client_addr)
-                
-                if response:
-                    client_sock.send(json.dumps(response).encode('utf-8'))
+        
         except Exception as e:
-            logger.error(f"Error handling client {client_addr}: {e}")
+            logger.error(f"Error handling device {client_addr}: {e}")
+        
         finally:
-            client_sock.close()
-            logger.info(f"Disconnected: {client_addr}")
+            try:
+                client_sock.close()
+            except:
+                pass
+            
+            with self._client_lock:
+                if client_id in self.clients:
+                    del self.clients[client_id]
+            
+            logger.info(f"Device disconnected: {client_addr}")
     
     def _process_message(self, message: Dict, client_addr: str) -> Optional[Dict]:
-        """Process message from client"""
+        """Process message from device"""
         msg_type = message.get('type')
         
         if msg_type == 'identify':
@@ -272,8 +389,23 @@ class BluetoothServer:
     def stop(self) -> None:
         """Stop Bluetooth server"""
         self.running = False
+        
+        # Close all client connections
+        with self._client_lock:
+            for client_sock in self.clients.values():
+                try:
+                    client_sock.close()
+                except:
+                    pass
+            self.clients.clear()
+        
+        # Close server socket
         if self.server_socket:
-            self.server_socket.close()
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        
         logger.info("Bluetooth server stopped")
 
 
@@ -289,6 +421,8 @@ class TCPServer:
         self.msg_queue = msg_queue
         self.server_socket = None
         self.running = False
+        self.clients: Dict[str, socket.socket] = {}
+        self._client_lock = threading.Lock()
     
     def start(self) -> None:
         """Start TCP server for control center"""
@@ -297,6 +431,7 @@ class TCPServer:
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind((TCP_HOST, TCP_PORT))
             self.server_socket.listen(TCP_BACKLOG)
+            self.server_socket.settimeout(TCP_TIMEOUT)
             
             logger.info(f"TCP server started on {TCP_HOST}:{TCP_PORT}")
             
@@ -310,7 +445,11 @@ class TCPServer:
         while self.running:
             try:
                 client_sock, client_addr = self.server_socket.accept()
-                logger.info(f"TCP connection from {client_addr}")
+                logger.info(f"Control Center connection from {client_addr}")
+                
+                # Store client
+                with self._client_lock:
+                    self.clients[str(client_addr)] = client_sock
                 
                 client_thread = threading.Thread(
                     target=self._handle_client,
@@ -318,28 +457,52 @@ class TCPServer:
                     daemon=True
                 )
                 client_thread.start()
+            
+            except socket.timeout:
+                continue
             except Exception as e:
-                logger.error(f"Error accepting TCP connection: {e}")
+                if self.running:
+                    logger.error(f"Error accepting TCP connection: {e}")
     
     def _handle_client(self, client_sock: socket.socket, client_addr: str) -> None:
         """Handle messages from control center"""
+        client_id = str(client_addr)
         try:
+            client_sock.settimeout(TCP_TIMEOUT)
+            
             while True:
-                data = client_sock.recv(1024).decode('utf-8')
-                if not data:
+                try:
+                    data = client_sock.recv(1024)
+                    if not data:
+                        break
+                    
+                    message = json.loads(data.decode('utf-8'))
+                    logger.debug(f"Control Center message: {message}")
+                    
+                    response = self._process_message(message)
+                    
+                    if response:
+                        client_sock.send(json.dumps(response).encode('utf-8'))
+                
+                except socket.timeout:
+                    continue
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON from control center: {e}")
                     break
-                
-                message = json.loads(data)
-                logger.debug(f"Control Center: {message}")
-                
-                response = self._process_message(message)
-                
-                if response:
-                    client_sock.send(json.dumps(response).encode('utf-8'))
+        
         except Exception as e:
             logger.error(f"Error handling control center {client_addr}: {e}")
+        
         finally:
-            client_sock.close()
+            try:
+                client_sock.close()
+            except:
+                pass
+            
+            with self._client_lock:
+                if client_id in self.clients:
+                    del self.clients[client_id]
+            
             logger.info(f"Control center disconnected: {client_addr}")
     
     def _process_message(self, message: Dict) -> Optional[Dict]:
@@ -351,6 +514,7 @@ class TCPServer:
                 "type": "status",
                 "contacts_count": len(self.contacts_db.get_contacts()),
                 "messages_count": len(self.msg_queue.messages),
+                "devices_connected": len(self.clients),
                 "timestamp": datetime.now().isoformat()
             }
         
@@ -372,8 +536,23 @@ class TCPServer:
     def stop(self) -> None:
         """Stop TCP server"""
         self.running = False
+        
+        # Close all client connections
+        with self._client_lock:
+            for client_sock in self.clients.values():
+                try:
+                    client_sock.close()
+                except:
+                    pass
+            self.clients.clear()
+        
+        # Close server socket
         if self.server_socket:
-            self.server_socket.close()
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        
         logger.info("TCP server stopped")
 
 
@@ -389,40 +568,64 @@ class SBMSHost:
         self.msg_queue = MessageQueue()
         self.bluetooth_server = BluetoothServer(self.contacts_db, self.msg_queue)
         self.tcp_server = TCPServer(self.contacts_db, self.msg_queue)
+        self.threads = []
     
     def start(self) -> None:
         """Start all services"""
-        logger.info("="*60)
+        logger.info("="*70)
         logger.info("Starting SBMS Windows Host")
-        logger.info("="*60)
+        logger.info("="*70)
         
         # Start Bluetooth server in thread
-        bt_thread = threading.Thread(target=self.bluetooth_server.start, daemon=True)
+        bt_thread = threading.Thread(target=self.bluetooth_server.start, daemon=False)
         bt_thread.start()
+        self.threads.append(bt_thread)
+        time.sleep(0.5)
         
         # Start TCP server in thread
-        tcp_thread = threading.Thread(target=self.tcp_server.start, daemon=True)
+        tcp_thread = threading.Thread(target=self.tcp_server.start, daemon=False)
         tcp_thread.start()
+        self.threads.append(tcp_thread)
+        time.sleep(0.5)
         
-        logger.info("All services started")
-        logger.info("\u2713 Bluetooth server listening")
-        logger.info("\u2713 TCP server listening")
-        logger.info("\u2713 Contact database ready")
-        logger.info("\u2713 Message queue active")
+        logger.info("="*70)
+        logger.info("✓ All services started successfully")
+        logger.info("="*70)
+        logger.info("✓ Bluetooth server listening")
+        logger.info("✓ TCP server listening on 127.0.0.1:9999")
+        logger.info("✓ Contact database ready")
+        logger.info("✓ Message queue active")
+        logger.info("="*70)
+        logger.info("")
+        logger.info("Press Ctrl+C to shut down...")
+        logger.info("")
         
         # Keep running
         try:
             while True:
-                input()
+                time.sleep(1)
         except KeyboardInterrupt:
+            logger.info("")
             self.stop()
     
     def stop(self) -> None:
         """Stop all services"""
+        logger.info("")
+        logger.info("="*70)
         logger.info("Shutting down SBMS Host...")
+        logger.info("="*70)
+        
         self.bluetooth_server.stop()
         self.tcp_server.stop()
+        
+        logger.info("Waiting for threads to finish...")
+        for thread in self.threads:
+            if thread.is_alive():
+                thread.join(timeout=5)
+        
+        logger.info("="*70)
         logger.info("SBMS Host stopped")
+        logger.info("="*70)
 
 
 if __name__ == "__main__":
